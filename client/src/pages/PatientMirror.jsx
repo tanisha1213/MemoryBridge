@@ -253,20 +253,45 @@ export default function PatientMirror() {
 
   // Capture Base64 frame snapshot and send to /api/visitors/unknown
   const captureAndPostUnknownVisitor = async (liveDescriptor = null, isManual = false) => {
-    if (!videoRef.current) return;
     try {
-      const video = videoRef.current;
       const canvas = document.createElement('canvas');
-      canvas.width = video.videoWidth || 640;
-      canvas.height = video.videoHeight || 480;
+      canvas.width = 640;
+      canvas.height = 480;
       const ctx = canvas.getContext('2d');
       
-      // Draw mirrored video frame to canvas
-      ctx.translate(canvas.width, 0);
-      ctx.scale(-1, 1);
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-      const photoThumbnail = canvas.toDataURL('image/jpeg', 0.85);
+      const video = videoRef.current;
+      let drawnSuccess = false;
 
+      if (video && video.readyState >= 2 && video.videoWidth > 0) {
+        try {
+          ctx.save();
+          ctx.translate(canvas.width, 0);
+          ctx.scale(-1, 1);
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          ctx.restore();
+          drawnSuccess = true;
+        } catch (canvasErr) {
+          console.warn('Video canvas draw error:', canvasErr);
+        }
+      }
+
+      if (!drawnSuccess) {
+        // Fallback styled snapshot canvas if video element is not ready
+        ctx.fillStyle = '#0f172a';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = '#6366f1';
+        ctx.beginPath();
+        ctx.arc(320, 200, 80, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#e0e7ff';
+        ctx.font = 'bold 24px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('Unrecognized Visitor Snapshot', 320, 340);
+        ctx.font = '16px sans-serif';
+        ctx.fillText(new Date().toLocaleTimeString(), 320, 380);
+      }
+
+      const photoThumbnail = canvas.toDataURL('image/jpeg', 0.8);
       const dummyDescriptor = Array.from({ length: 128 }, () => (Math.random() - 0.5) * 0.1);
 
       const res = await fetch('/api/visitors/unknown', {
@@ -284,9 +309,12 @@ export default function PatientMirror() {
             ? '📸 Manual snapshot logged to Caregiver Queue!'
             : '📸 Unrecognized visitor detected! Snapshot saved to Caregiver Queue.'
         );
+      } else {
+        hasCapturedForCurrentUnknownRef.current = false;
       }
     } catch (err) {
       console.error('Failed to post unknown snapshot:', err);
+      hasCapturedForCurrentUnknownRef.current = false;
     }
   };
 
