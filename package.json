@@ -1,0 +1,15 @@
+{
+  "name": "memorybridge",
+  "version": "1.0.0",
+  "description": "Lightweight dementia memory assistant and caregiver portal",
+  "main": "server/server.js",
+  "scripts": {
+    "start": "node server/server.js",
+    "server": "node server/server.js",
+    "client": "npm run dev --prefix client",
+    "dev": "concurrently \"npm run server\" \"npm run client\""
+  },
+  "keywords": ["dementia", "caregiver", "face-api", "react", "mern", "accessibility"],
+  "author": "",
+  "license": "ISC"
+}
