@@ -4,31 +4,30 @@ const fs = require('fs');
 const path = require('path');
 const Visitor = require('../models/Visitor');
 
-// File-backed persistent storage fallback
+// Use global object to preserve memory across Vercel serverless function warm starts
+global._memoryBridgeVisitors = global._memoryBridgeVisitors || [];
+
 const DATA_DIR = path.join(__dirname, '../data');
 const FILE_PATH = path.join(DATA_DIR, 'visitors.json');
 
-// Ensure data directory exists
-if (!fs.existsSync(DATA_DIR)) {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-}
-
-// Load initial file storage if exists
-let localVisitors = [];
+// Safely load initial file storage if writeable
 try {
-  if (fs.existsSync(FILE_PATH)) {
+  if (fs.existsSync(FILE_PATH) && global._memoryBridgeVisitors.length === 0) {
     const raw = fs.readFileSync(FILE_PATH, 'utf8');
-    localVisitors = JSON.parse(raw);
+    global._memoryBridgeVisitors = JSON.parse(raw);
   }
 } catch (e) {
-  localVisitors = [];
+  // Ignore read errors on serverless environments
 }
 
 const saveLocalVisitors = () => {
   try {
-    fs.writeFileSync(FILE_PATH, JSON.stringify(localVisitors, null, 2), 'utf8');
+    if (!fs.existsSync(DATA_DIR)) {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
+    fs.writeFileSync(FILE_PATH, JSON.stringify(global._memoryBridgeVisitors, null, 2), 'utf8');
   } catch (e) {
-    console.error('Failed to write local visitors.json:', e);
+    // EROFS (Read-only file system on Vercel) -> Safely ignore disk write, keep in global memory
   }
 };
 
@@ -52,11 +51,15 @@ router.get('/', async (req, res) => {
       const visitors = await Visitor.find(filter).sort({ updatedAt: -1, createdAt: -1 });
       return res.json(visitors);
     } else {
-      let filtered = [...localVisitors];
+      let filtered = [...global._memoryBridgeVisitors];
       if (registered === 'true') filtered = filtered.filter((v) => v.isRegistered === true);
       if (registered === 'false') filtered = filtered.filter((v) => !v.isRegistered);
-      
-      filtered.sort((a, b) => new Date(b.updatedAt || b.createdAt || b.lastSeen) - new Date(a.updatedAt || a.createdAt || a.lastSeen));
+
+      filtered.sort(
+        (a, b) =>
+          new Date(b.updatedAt || b.createdAt || b.lastSeen) -
+          new Date(a.updatedAt || a.createdAt || a.lastSeen)
+      );
       return res.json(filtered);
     }
   } catch (error) {
@@ -70,11 +73,11 @@ router.get('/unknown', async (req, res) => {
   try {
     if (isDbConnected()) {
       const unknowns = await Visitor.find({
-        $or: [{ isRegistered: false }, { isRegistered: { $exists: false } }, { isRegistered: null }]
+        $or: [{ isRegistered: false }, { isRegistered: { $exists: false } }, { isRegistered: null }],
       }).sort({ lastSeen: -1, createdAt: -1 });
       return res.json(unknowns);
     } else {
-      const unknowns = localVisitors.filter((v) => !v.isRegistered);
+      const unknowns = global._memoryBridgeVisitors.filter((v) => !v.isRegistered);
       unknowns.sort((a, b) => new Date(b.lastSeen || b.createdAt) - new Date(a.lastSeen || a.createdAt));
       return res.json(unknowns);
     }
@@ -105,8 +108,7 @@ router.post('/unknown', async (req, res) => {
       const newVisitor = new Visitor(newVisitorData);
       await newVisitor.save();
 
-      // Mirror to local JSON storage for resilience
-      localVisitors.unshift(newVisitor.toObject());
+      global._memoryBridgeVisitors.unshift(newVisitor.toObject());
       saveLocalVisitors();
 
       return res.status(201).json(newVisitor);
@@ -117,7 +119,7 @@ router.post('/unknown', async (req, res) => {
         createdAt: new Date(),
         updatedAt: new Date(),
       };
-      localVisitors.unshift(newVisitor);
+      global._memoryBridgeVisitors.unshift(newVisitor);
       saveLocalVisitors();
       return res.status(201).json(newVisitor);
     }
@@ -155,12 +157,13 @@ router.post('/register', async (req, res) => {
         visitor.lastSeen = new Date();
         await visitor.save();
 
-        // Update local JSON cache as well
-        const idx = localVisitors.findIndex((v) => String(v._id) === String(id) || v.photoThumbnail === photoThumbnail);
+        const idx = global._memoryBridgeVisitors.findIndex(
+          (v) => String(v._id) === String(id) || v.photoThumbnail === photoThumbnail
+        );
         if (idx !== -1) {
-          localVisitors[idx] = visitor.toObject();
+          global._memoryBridgeVisitors[idx] = visitor.toObject();
         } else {
-          localVisitors.unshift(visitor.toObject());
+          global._memoryBridgeVisitors.unshift(visitor.toObject());
         }
         saveLocalVisitors();
 
@@ -176,21 +179,21 @@ router.post('/register', async (req, res) => {
           lastSeen: new Date(),
         });
         await newVisitor.save();
-        localVisitors.unshift(newVisitor.toObject());
+        global._memoryBridgeVisitors.unshift(newVisitor.toObject());
         saveLocalVisitors();
         return res.status(201).json(newVisitor);
       }
     } else {
       let existingIndex = -1;
       if (id) {
-        existingIndex = localVisitors.findIndex((v) => String(v._id) === String(id));
+        existingIndex = global._memoryBridgeVisitors.findIndex((v) => String(v._id) === String(id));
       }
       if (existingIndex === -1 && photoThumbnail) {
-        existingIndex = localVisitors.findIndex((v) => v.photoThumbnail === photoThumbnail);
+        existingIndex = global._memoryBridgeVisitors.findIndex((v) => v.photoThumbnail === photoThumbnail);
       }
 
       if (existingIndex !== -1) {
-        const item = localVisitors[existingIndex];
+        const item = global._memoryBridgeVisitors[existingIndex];
         item.name = name;
         item.relationship = relationship;
         item.contextNote = contextNote || '';
@@ -213,7 +216,7 @@ router.post('/register', async (req, res) => {
           createdAt: new Date(),
           updatedAt: new Date(),
         };
-        localVisitors.unshift(newVisitor);
+        global._memoryBridgeVisitors.unshift(newVisitor);
         saveLocalVisitors();
         return res.status(201).json(newVisitor);
       }
@@ -231,7 +234,7 @@ router.delete('/:id', async (req, res) => {
     if (isDbConnected()) {
       await Visitor.findByIdAndDelete(id);
     }
-    localVisitors = localVisitors.filter((v) => String(v._id) !== String(id));
+    global._memoryBridgeVisitors = global._memoryBridgeVisitors.filter((v) => String(v._id) !== String(id));
     saveLocalVisitors();
     res.json({ message: 'Visitor deleted successfully' });
   } catch (error) {

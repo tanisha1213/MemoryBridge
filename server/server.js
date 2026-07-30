@@ -15,18 +15,33 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// Connect to MongoDB with fallback logging
-mongoose
-  .connect(MONGODB_URI, {
-    serverSelectionTimeoutMS: 3000,
-  })
-  .then(() => {
-    console.log('✅ Connected to MongoDB successfully.');
-  })
-  .catch((err) => {
-    console.warn('⚠️ MongoDB connection failed. Running with resilient in-memory fallback store.');
-    console.warn('Details:', err.message);
-  });
+// Cached MongoDB Connection for Serverless (Vercel)
+let cachedConn = null;
+
+async function connectToDatabase() {
+  if (mongoose.connection.readyState >= 1) {
+    return mongoose.connection;
+  }
+  if (!cachedConn) {
+    cachedConn = mongoose.connect(MONGODB_URI, {
+      serverSelectionTimeoutMS: 4000,
+    }).catch((err) => {
+      console.warn('⚠️ MongoDB connection attempt failed:', err.message);
+      cachedConn = null;
+    });
+  }
+  return cachedConn;
+}
+
+// Auto-connect middleware for all API calls
+app.use(async (req, res, next) => {
+  try {
+    await connectToDatabase();
+  } catch (err) {
+    // Continue even if DB offline (will use in-memory fallback)
+  }
+  next();
+});
 
 // API Routes
 app.use('/api/visitors', visitorRoutes);
