@@ -53,15 +53,23 @@ export default function CaregiverDashboard() {
 
   // Load all dashboard data
   const fetchAllData = async () => {
-    setLoading(true);
     try {
-      const [unknownRes, registeredRes, remindersRes] = await Promise.all([
-        fetch('/api/visitors?registered=false'),
-        fetch('/api/visitors?registered=true'),
-        fetch('/api/reminders'),
-      ]);
+      let unknownData = [];
+      const unknownRes = await fetch('/api/visitors?registered=false');
+      if (unknownRes.ok) {
+        unknownData = await unknownRes.json();
+      }
+      if (!unknownData || unknownData.length === 0) {
+        const altRes = await fetch('/api/visitors/unknown');
+        if (altRes.ok) {
+          unknownData = await altRes.json();
+        }
+      }
 
-      if (unknownRes.ok) setUnknownQueue(await unknownRes.json());
+      const registeredRes = await fetch('/api/visitors?registered=true');
+      const remindersRes = await fetch('/api/reminders');
+
+      setUnknownQueue(unknownData || []);
       if (registeredRes.ok) setRegisteredVisitors(await registeredRes.json());
       if (remindersRes.ok) setReminders(await remindersRes.json());
     } catch (err) {

@@ -1,9 +1,36 @@
 const express = require('express');
 const router = express.Router();
+const fs = require('fs');
+const path = require('path');
 const Visitor = require('../models/Visitor');
 
-// In-memory storage fallback if MongoDB is not connected
-let inMemoryVisitors = [];
+// File-backed persistent storage fallback
+const DATA_DIR = path.join(__dirname, '../data');
+const FILE_PATH = path.join(DATA_DIR, 'visitors.json');
+
+// Ensure data directory exists
+if (!fs.existsSync(DATA_DIR)) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+}
+
+// Load initial file storage if exists
+let localVisitors = [];
+try {
+  if (fs.existsSync(FILE_PATH)) {
+    const raw = fs.readFileSync(FILE_PATH, 'utf8');
+    localVisitors = JSON.parse(raw);
+  }
+} catch (e) {
+  localVisitors = [];
+}
+
+const saveLocalVisitors = () => {
+  try {
+    fs.writeFileSync(FILE_PATH, JSON.stringify(localVisitors, null, 2), 'utf8');
+  } catch (e) {
+    console.error('Failed to write local visitors.json:', e);
+  }
+};
 
 const isDbConnected = () => {
   const mongoose = require('mongoose');
@@ -14,18 +41,22 @@ const isDbConnected = () => {
 router.get('/', async (req, res) => {
   try {
     const { registered } = req.query;
-    let filter = {};
-    if (registered === 'true') filter.isRegistered = true;
-    if (registered === 'false') filter.isRegistered = false;
 
     if (isDbConnected()) {
-      const visitors = await Visitor.find(filter).sort({ updatedAt: -1 });
+      let filter = {};
+      if (registered === 'true') filter.isRegistered = true;
+      if (registered === 'false') {
+        filter.$or = [{ isRegistered: false }, { isRegistered: { $exists: false } }, { isRegistered: null }];
+      }
+
+      const visitors = await Visitor.find(filter).sort({ updatedAt: -1, createdAt: -1 });
       return res.json(visitors);
     } else {
-      let filtered = [...inMemoryVisitors];
-      if (registered === 'true') filtered = filtered.filter((v) => v.isRegistered);
+      let filtered = [...localVisitors];
+      if (registered === 'true') filtered = filtered.filter((v) => v.isRegistered === true);
       if (registered === 'false') filtered = filtered.filter((v) => !v.isRegistered);
-      filtered.sort((a, b) => new Date(b.updatedAt || b.lastSeen) - new Date(a.updatedAt || a.lastSeen));
+      
+      filtered.sort((a, b) => new Date(b.updatedAt || b.createdAt || b.lastSeen) - new Date(a.updatedAt || a.createdAt || a.lastSeen));
       return res.json(filtered);
     }
   } catch (error) {
@@ -34,15 +65,17 @@ router.get('/', async (req, res) => {
   }
 });
 
-// POST /api/visitors/unknown - Log an unrecognized face snapshot
+// GET /api/visitors/unknown - Dedicated endpoint to fetch unrecognized visitor queue
 router.get('/unknown', async (req, res) => {
-  // Alias GET unknown for convenience
   try {
     if (isDbConnected()) {
-      const unknowns = await Visitor.find({ isRegistered: false }).sort({ lastSeen: -1 });
+      const unknowns = await Visitor.find({
+        $or: [{ isRegistered: false }, { isRegistered: { $exists: false } }, { isRegistered: null }]
+      }).sort({ lastSeen: -1, createdAt: -1 });
       return res.json(unknowns);
     } else {
-      const unknowns = inMemoryVisitors.filter((v) => !v.isRegistered);
+      const unknowns = localVisitors.filter((v) => !v.isRegistered);
+      unknowns.sort((a, b) => new Date(b.lastSeen || b.createdAt) - new Date(a.lastSeen || a.createdAt));
       return res.json(unknowns);
     }
   } catch (error) {
@@ -50,6 +83,7 @@ router.get('/unknown', async (req, res) => {
   }
 });
 
+// POST /api/visitors/unknown - Log an unrecognized face snapshot
 router.post('/unknown', async (req, res) => {
   try {
     const { photoThumbnail, faceDescriptor } = req.body;
@@ -70,6 +104,11 @@ router.post('/unknown', async (req, res) => {
     if (isDbConnected()) {
       const newVisitor = new Visitor(newVisitorData);
       await newVisitor.save();
+
+      // Mirror to local JSON storage for resilience
+      localVisitors.unshift(newVisitor.toObject());
+      saveLocalVisitors();
+
       return res.status(201).json(newVisitor);
     } else {
       const newVisitor = {
@@ -78,7 +117,8 @@ router.post('/unknown', async (req, res) => {
         createdAt: new Date(),
         updatedAt: new Date(),
       };
-      inMemoryVisitors.unshift(newVisitor);
+      localVisitors.unshift(newVisitor);
+      saveLocalVisitors();
       return res.status(201).json(newVisitor);
     }
   } catch (error) {
@@ -102,7 +142,6 @@ router.post('/register', async (req, res) => {
         visitor = await Visitor.findById(id);
       }
       if (!visitor && photoThumbnail) {
-        // Try finding by thumbnail if ID not matched
         visitor = await Visitor.findOne({ photoThumbnail });
       }
 
@@ -115,6 +154,16 @@ router.post('/register', async (req, res) => {
         visitor.isRegistered = true;
         visitor.lastSeen = new Date();
         await visitor.save();
+
+        // Update local JSON cache as well
+        const idx = localVisitors.findIndex((v) => String(v._id) === String(id) || v.photoThumbnail === photoThumbnail);
+        if (idx !== -1) {
+          localVisitors[idx] = visitor.toObject();
+        } else {
+          localVisitors.unshift(visitor.toObject());
+        }
+        saveLocalVisitors();
+
         return res.json(visitor);
       } else {
         const newVisitor = new Visitor({
@@ -127,19 +176,21 @@ router.post('/register', async (req, res) => {
           lastSeen: new Date(),
         });
         await newVisitor.save();
+        localVisitors.unshift(newVisitor.toObject());
+        saveLocalVisitors();
         return res.status(201).json(newVisitor);
       }
     } else {
       let existingIndex = -1;
       if (id) {
-        existingIndex = inMemoryVisitors.findIndex((v) => v._id === id);
+        existingIndex = localVisitors.findIndex((v) => String(v._id) === String(id));
       }
       if (existingIndex === -1 && photoThumbnail) {
-        existingIndex = inMemoryVisitors.findIndex((v) => v.photoThumbnail === photoThumbnail);
+        existingIndex = localVisitors.findIndex((v) => v.photoThumbnail === photoThumbnail);
       }
 
       if (existingIndex !== -1) {
-        const item = inMemoryVisitors[existingIndex];
+        const item = localVisitors[existingIndex];
         item.name = name;
         item.relationship = relationship;
         item.contextNote = contextNote || '';
@@ -147,6 +198,7 @@ router.post('/register', async (req, res) => {
         if (photoThumbnail) item.photoThumbnail = photoThumbnail;
         item.isRegistered = true;
         item.updatedAt = new Date();
+        saveLocalVisitors();
         return res.json(item);
       } else {
         const newVisitor = {
@@ -161,7 +213,8 @@ router.post('/register', async (req, res) => {
           createdAt: new Date(),
           updatedAt: new Date(),
         };
-        inMemoryVisitors.unshift(newVisitor);
+        localVisitors.unshift(newVisitor);
+        saveLocalVisitors();
         return res.status(201).json(newVisitor);
       }
     }
@@ -177,9 +230,9 @@ router.delete('/:id', async (req, res) => {
     const { id } = req.params;
     if (isDbConnected()) {
       await Visitor.findByIdAndDelete(id);
-    } else {
-      inMemoryVisitors = inMemoryVisitors.filter((v) => v._id !== id);
     }
+    localVisitors = localVisitors.filter((v) => String(v._id) !== String(id));
+    saveLocalVisitors();
     res.json({ message: 'Visitor deleted successfully' });
   } catch (error) {
     res.status(500).json({ error: 'Failed to delete visitor' });
