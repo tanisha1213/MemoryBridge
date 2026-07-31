@@ -78,8 +78,6 @@ app.use((req, res, next) => {
   next();
 });
 
-const getUserId = (req) => req.headers['x-user-id'] || req.query.userId || req.body?.userId || null;
-
 // Auth Route Handlers
 const handleAuthLogin = async (req, res) => {
   const { email, password } = req.body;
@@ -430,6 +428,7 @@ const handleRegisterPost = async (req, res) => {
       };
       global._memoryBridgeVisitors.unshift(newVisitor);
       return res.status(201).json(newVisitor);
+    }
   } catch (err) {
     return res.status(500).json({ error: err.message || 'Failed to register visitor' });
   }
