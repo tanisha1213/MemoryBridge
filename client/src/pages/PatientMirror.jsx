@@ -67,6 +67,58 @@ export default function PatientMirror() {
   const noFaceFramesCountRef = useRef(0);
   const isProcessingFrameRef = useRef(false);
 
+  // Track face boxes across frames to prevent ID flickering
+  const trackedFacesRef = useRef({});
+
+  // Calculate Intersection over Union (IoU) to match bounding boxes between frames
+  const calculateIoU = (boxA, boxB) => {
+    if (!boxA || !boxB) return 0;
+    const xA = Math.max(boxA.x, boxB.x);
+    const yA = Math.max(boxA.y, boxB.y);
+    const xB = Math.min(boxA.x + boxA.width, boxB.x + boxB.width);
+    const yB = Math.min(boxA.y + boxA.height, boxB.y + boxB.height);
+
+    const interArea = Math.max(0, xB - xA) * Math.max(0, yB - yA);
+    if (interArea === 0) return 0;
+
+    const boxAArea = boxA.width * boxA.height;
+    const boxBArea = boxB.width * boxB.height;
+
+    return interArea / (boxAArea + boxBArea - interArea);
+  };
+
+  // Cosine Similarity replacing raw Euclidean Distance for high accuracy
+  const getCosineSimilarity = (vecA, vecB) => {
+    if (!vecA || !vecB || vecA.length !== 128 || vecB.length !== 128) return -1;
+    let dotProduct = 0;
+    let normA = 0;
+    let normB = 0;
+    for (let i = 0; i < 128; i++) {
+      dotProduct += vecA[i] * vecB[i];
+      normA += vecA[i] * vecA[i];
+      normB += vecB[i] * vecB[i];
+    }
+    if (normA === 0 || normB === 0) return -1;
+    return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
+  };
+
+  const getMostFrequent = (arr) => {
+    if (!arr || !arr.length) return null;
+    const counts = {};
+    arr.forEach((x) => {
+      if (x) counts[x] = (counts[x] || 0) + 1;
+    });
+    let maxItem = null;
+    let maxCount = -1;
+    Object.keys(counts).forEach((item) => {
+      if (counts[item] > maxCount) {
+        maxCount = counts[item];
+        maxItem = item;
+      }
+    });
+    return maxItem;
+  };
+
   const t = (key, params = {}) => getLocalizedText(currentLang, key, params);
 
   const showToast = (msg) => {
@@ -341,47 +393,78 @@ export default function PatientMirror() {
         const liveOutfitVector = extractOutfitColorVector(video, box);
 
         let bestMatch = null;
-        let minDistance = 1.0;
+        let maxSimilarity = -1;
 
-        // MULTI-VECTOR MATCHING ENGINE: Evaluate distance against ALL stored pose vectors per person
+        // MULTI-VECTOR MATCHING ENGINE: Evaluate Cosine Similarity against ALL stored pose vectors per person
         registeredVisitors.forEach((visitor) => {
           if (visitor.faceDescriptors && Array.isArray(visitor.faceDescriptors) && visitor.faceDescriptors.length > 0) {
             visitor.faceDescriptors.forEach((descriptorArray) => {
               if (descriptorArray && descriptorArray.length === 128) {
-                const savedDescriptor = new Float32Array(descriptorArray);
-                const dist = faceapi.euclideanDistance(liveDescriptor, savedDescriptor);
-                if (dist < minDistance) {
-                  minDistance = dist;
+                const sim = getCosineSimilarity(liveDescriptor, descriptorArray);
+                if (sim > maxSimilarity) {
+                  maxSimilarity = sim;
                   bestMatch = visitor;
                 }
               }
             });
           } else if (visitor.faceDescriptor && visitor.faceDescriptor.length === 128) {
-            const savedDescriptor = new Float32Array(visitor.faceDescriptor);
-            const dist = faceapi.euclideanDistance(liveDescriptor, savedDescriptor);
-            if (dist < minDistance) {
-              minDistance = dist;
+            const sim = getCosineSimilarity(liveDescriptor, visitor.faceDescriptor);
+            if (sim > maxSimilarity) {
+              maxSimilarity = sim;
               bestMatch = visitor;
             }
           }
         });
 
+        // 1. Match this face to an existing tracked bounding box in the previous frame
+        const currentTracked = { ...trackedFacesRef.current };
+        let matchedTrackKey = null;
+        let maxIoU = 0;
+
+        Object.keys(currentTracked).forEach((key) => {
+          const iou = calculateIoU(box, currentTracked[key]?.box);
+          if (iou > 0.4 && iou > maxIoU) {
+            maxIoU = iou;
+            matchedTrackKey = key;
+          }
+        });
+
+        // 2. Strict Similarity Threshold (> 0.82 for Cosine Similarity)
+        const identifiedVisitor = bestMatch && maxSimilarity > 0.82 ? bestMatch : null;
+        const candidateId = identifiedVisitor ? String(identifiedVisitor._id) : 'UNKNOWN';
+
+        // 3. Smooth identity using a 5-frame rolling voting window
+        const trackId = matchedTrackKey || `face_${Date.now()}_${Math.random()}`;
+        const history = currentTracked[trackId]?.votes || [];
+        const newHistory = [...history.slice(-4), candidateId]; // Keep last 5 frames
+        const winningId = getMostFrequent(newHistory);
+
+        const winningVisitor = winningId !== 'UNKNOWN' ? registeredVisitors.find((v) => String(v._id) === String(winningId)) : null;
+
+        trackedFacesRef.current = {
+          [trackId]: {
+            box,
+            votes: newHistory,
+            activeVisitor: winningVisitor,
+          },
+        };
+
         // =========================================================
-        // 🟢 1. RECOGNIZED USER (Strict Distance Threshold: 0.46)
+        // 🟢 1. RECOGNIZED USER (Strict Cosine Similarity > 0.82 & Majority Vote Winner)
         // =========================================================
-        if (bestMatch && minDistance < 0.46) {
+        if (winningVisitor && maxSimilarity > 0.82) {
           unknownFrameCounterRef.current = 0;
 
-          if (activeRecognizedUserRef.current !== bestMatch._id) {
-            activeRecognizedUserRef.current = bestMatch._id;
-            setRecognizedPerson(bestMatch);
+          if (activeRecognizedUserRef.current !== winningVisitor._id) {
+            activeRecognizedUserRef.current = winningVisitor._id;
+            setRecognizedPerson(winningVisitor);
             setIsUnknownPresent(false);
-            setDetectionDistance(minDistance.toFixed(2));
-            speakRecognition(bestMatch, currentLang);
+            setDetectionDistance(maxSimilarity.toFixed(2));
+            speakRecognition(winningVisitor, currentLang);
           } else {
-            setRecognizedPerson(bestMatch);
+            setRecognizedPerson(winningVisitor);
             setIsUnknownPresent(false);
-            setDetectionDistance(minDistance.toFixed(2));
+            setDetectionDistance(maxSimilarity.toFixed(2));
           }
           // Exit loop, DO NOT proceed to snapshot checks
           return;

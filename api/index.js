@@ -422,9 +422,56 @@ const handleRegisterPost = async (req, res) => {
       };
       global._memoryBridgeVisitors.unshift(newVisitor);
       return res.status(201).json(newVisitor);
-    }
   } catch (err) {
     return res.status(500).json({ error: err.message || 'Failed to register visitor' });
+  }
+};
+
+const handleMatchVectorPost = async (req, res) => {
+  try {
+    const { liveDescriptor } = req.body;
+    const familyCode = getFamilyCode(req);
+
+    if (!liveDescriptor || liveDescriptor.length !== 128) {
+      return res.status(400).json({ error: 'Valid 128-D liveDescriptor vector is required' });
+    }
+
+    let visitors = [];
+    if (isDbConnected()) {
+      visitors = await Visitor.find({ ...(familyCode ? { familyCode } : {}), isRegistered: true }).lean();
+    } else {
+      visitors = global._memoryBridgeVisitors.filter((v) => (!familyCode || v.familyCode === familyCode) && v.isRegistered);
+    }
+
+    let bestMatch = null;
+    let maxSimilarity = -1;
+
+    for (const visitor of visitors) {
+      const descriptors = visitor.faceDescriptors || (visitor.faceDescriptor ? [visitor.faceDescriptor] : []);
+      for (const descriptorArray of descriptors) {
+        if (descriptorArray && descriptorArray.length === 128) {
+          let dot = 0, normA = 0, normB = 0;
+          for (let i = 0; i < 128; i++) {
+            dot += liveDescriptor[i] * descriptorArray[i];
+            normA += liveDescriptor[i] ** 2;
+            normB += descriptorArray[i] ** 2;
+          }
+          const sim = normA > 0 && normB > 0 ? dot / (Math.sqrt(normA) * Math.sqrt(normB)) : -1;
+          if (sim > maxSimilarity) {
+            maxSimilarity = sim;
+            bestMatch = visitor;
+          }
+        }
+      }
+    }
+
+    if (bestMatch && maxSimilarity > 0.82) {
+      return res.json({ matched: true, visitor: bestMatch, similarity: maxSimilarity });
+    }
+
+    return res.json({ matched: false, visitor: null, similarity: maxSimilarity });
+  } catch (err) {
+    res.status(500).json({ error: 'Server vector match failed' });
   }
 };
 
@@ -438,6 +485,10 @@ app.all('*', async (req, res) => {
   if (urlPath.includes('/auth/access-code')) return handleAuthCode(req, res);
 
   // Visitor Routes
+  if (urlPath.includes('/visitors/match-vector')) {
+    if (method === 'POST') return handleMatchVectorPost(req, res);
+  }
+
   if (urlPath.includes('/visitors/append-vector')) {
     if (method === 'POST') return handleAppendVectorPost(req, res);
   }
