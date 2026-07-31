@@ -1,6 +1,8 @@
 const express = require('express');
 const router = express.Router();
-const axios = require('axios');
+const https = require('https');
+let axios;
+try { axios = require('axios'); } catch (e) {}
 
 // Helper function to sanitize and fix Hindi/Marathi grammar bugs
 const normalizeIndianText = (text, lang) => {
@@ -57,17 +59,29 @@ const handleTtsStream = async (req, res) => {
     // 3. Fetch clear audio stream from Google Neural TTS engine
     const googleTtsUrl = `https://translate.google.com/translate_tts?ie=UTF-8&q=${encodeURIComponent(sanitizedText)}&tl=${targetLang}&client=tw-ob`;
 
-    const response = await axios({
-      method: 'get',
-      url: googleTtsUrl,
-      responseType: 'stream',
+    if (axios) {
+      const response = await axios({
+        method: 'get',
+        url: googleTtsUrl,
+        responseType: 'stream',
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        },
+      });
+      res.set('Content-Type', 'audio/mpeg');
+      return response.data.pipe(res);
+    }
+
+    https.get(googleTtsUrl, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      },
+      }
+    }, (stream) => {
+      res.set('Content-Type', 'audio/mpeg');
+      stream.pipe(res);
+    }).on('error', (err) => {
+      res.status(500).json({ error: 'TTS stream request failed' });
     });
-
-    res.set('Content-Type', 'audio/mpeg');
-    response.data.pipe(res);
   } catch (error) {
     console.error('TTS Stream Error:', error.message);
     res.status(500).json({ error: 'Failed to stream audio' });
