@@ -24,10 +24,12 @@ export default function PatientMirror() {
   // Reminders
   const [reminders, setReminders] = useState([]);
 
-  // Tracking timestamps and encounter states
+  // Tracking refs to prevent speech spam and duplicate snapshots
   const lastSpokenPersonIdRef = useRef(null);
   const lastSpokenTimeRef = useRef(0);
+  const lastUnknownSpokenTimeRef = useRef(0);
   const hasCapturedForCurrentUnknownRef = useRef(false);
+  const noFaceFramesCountRef = useRef(0);
   const isProcessingFrameRef = useRef(false);
 
   const showToast = (msg) => {
@@ -89,7 +91,7 @@ export default function PatientMirror() {
     }
   };
 
-  // Auto-fetch data polling
+  // Auto-fetch data polling every 3s
   useEffect(() => {
     fetchData();
     const interval = setInterval(fetchData, 3000);
@@ -153,7 +155,7 @@ export default function PatientMirror() {
         const video = videoRef.current;
         let detection = null;
 
-        // Attempt 1: SSD Mobilenet (Low confidence threshold)
+        // Attempt 1: SSD Mobilenet
         try {
           if (faceapi.nets.ssdMobilenetv1.isLoaded) {
             detection = await faceapi
@@ -176,6 +178,8 @@ export default function PatientMirror() {
         }
 
         if (detection) {
+          noFaceFramesCountRef.current = 0; // Face detected! Reset missing counter.
+
           const liveDescriptor = Array.from(detection.descriptor);
           let bestMatch = null;
           let minDistance = 1.0;
@@ -194,22 +198,30 @@ export default function PatientMirror() {
           if (bestMatch && minDistance < 0.65) {
             setRecognizedPerson(bestMatch);
             setDetectionDistance(minDistance.toFixed(2));
-            speakMemoryCue(bestMatch);
+            speakMemoryCue(bestMatch); // Speaks automatically for recognized visitor!
             hasCapturedForCurrentUnknownRef.current = false;
           } else {
-            // Unrecognized face detected
+            // UNRECOGNIZED FACE DETECTED
             setRecognizedPerson(null);
             setDetectionDistance(null);
 
+            // TAKE EXACTLY 1 SNAPSHOT PER UNKNOWN ENCOUNTER
             if (!hasCapturedForCurrentUnknownRef.current) {
               hasCapturedForCurrentUnknownRef.current = true;
               captureAndPostUnknownVisitor(liveDescriptor, false);
+              speakUnknownAnnouncement(); // Speaks automatically for unrecognized visitor!
             }
           }
         } else {
+          // Increment missing face frame counter
+          noFaceFramesCountRef.current += 1;
           setRecognizedPerson(null);
           setDetectionDistance(null);
-          hasCapturedForCurrentUnknownRef.current = false;
+
+          // Require no face seen for at least 8 frames (~4 seconds) before resetting encounter state
+          if (noFaceFramesCountRef.current > 8) {
+            hasCapturedForCurrentUnknownRef.current = false;
+          }
         }
       } catch (err) {
         // Silent catch
@@ -233,6 +245,7 @@ export default function PatientMirror() {
     );
   };
 
+  // Automatic Voice Announcement for RECOGNIZED Visitor
   const speakMemoryCue = (person) => {
     if (!('speechSynthesis' in window)) return;
 
@@ -251,6 +264,29 @@ export default function PatientMirror() {
 
     setTimeout(() => {
       const textToSpeak = `This is your ${person.relationship.toLowerCase()}, ${person.name}. ${person.contextNote || ''}`;
+      const utterance = new SpeechSynthesisUtterance(textToSpeak);
+      utterance.volume = 1.0;
+      utterance.rate = 0.88;
+      utterance.pitch = 1.0;
+
+      window.speechSynthesis.speak(utterance);
+    }, 60);
+  };
+
+  // Automatic Voice Announcement for UNRECOGNIZED Visitor
+  const speakUnknownAnnouncement = () => {
+    if (!('speechSynthesis' in window)) return;
+
+    const now = Date.now();
+    if (now - lastUnknownSpokenTimeRef.current < 20000) {
+      return;
+    }
+    lastUnknownSpokenTimeRef.current = now;
+
+    window.speechSynthesis.cancel();
+
+    setTimeout(() => {
+      const textToSpeak = "An unrecognized visitor is here. A snapshot has been saved for your caregiver.";
       const utterance = new SpeechSynthesisUtterance(textToSpeak);
       utterance.volume = 1.0;
       utterance.rate = 0.88;
@@ -352,6 +388,9 @@ export default function PatientMirror() {
     if (recognizedPerson) {
       lastSpokenTimeRef.current = 0;
       speakMemoryCue(recognizedPerson);
+    } else {
+      lastUnknownSpokenTimeRef.current = 0;
+      speakUnknownAnnouncement();
     }
   };
 
@@ -519,7 +558,7 @@ export default function PatientMirror() {
               </div>
               <h3 className="text-2xl font-bold text-[#0A192F]">Waiting for Visitor...</h3>
               <p className="text-base text-[#0A192F]/80">
-                Look directly into the camera. Unrecognized faces are automatically captured and sent to the Caregiver Portal queue for tagging.
+                Look directly into the camera. Unrecognized faces are automatically captured and announced for patient safety.
               </p>
             </div>
           )}
