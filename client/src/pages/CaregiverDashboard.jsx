@@ -174,7 +174,7 @@ export default function CaregiverDashboard() {
       setLoading(true);
       const headers = getAuthHeaders();
       const [unknownRes, registeredRes, settingsRes] = await Promise.all([
-        fetch('/api/visitors?registered=false', { headers }),
+        fetch('/api/visitors/unknowns', { headers }),
         fetch('/api/visitors?registered=true', { headers }),
         fetch('/api/settings', { headers }),
       ]);
