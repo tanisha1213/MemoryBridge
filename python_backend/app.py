@@ -82,7 +82,27 @@ def recognize_visitor():
         unknown_encodings = face_recognition.face_encodings(rgb_img)
 
         if not unknown_encodings:
-            return jsonify({'status': 'NO_FACE'})
+            snapshot_id = None
+            if save_snapshot and unknown_queue_col is not None:
+                unknown_doc = {
+                    'familyCode': family_code,
+                    'name': 'Unrecognized Person',
+                    'relationship': 'Unknown',
+                    'contextNote': 'Captured by camera (unprocessed frame)',
+                    'photoThumbnail': image_b64,
+                    'isRegistered': False,
+                    'status': 'UNPROCESSED_NO_FACE',
+                    'createdAt': datetime.utcnow()
+                }
+                try:
+                    res_unknown = unknown_queue_col.insert_one(unknown_doc)
+                    if visitors_col is not None:
+                        visitors_col.insert_one(unknown_doc)
+                    snapshot_id = str(res_unknown.inserted_id)
+                    print(f"📸 Forced save snapshot (No face box detected)! Doc ID: {snapshot_id}")
+                except Exception as db_err:
+                    print(f"⚠️ MongoDB Insert Error: {db_err}")
+            return jsonify({'status': 'NO_FACE', 'snapshotSaved': save_snapshot, 'snapshotId': snapshot_id})
 
         unknown_encoding = unknown_encodings[0]
         registered_visitors = list(visitors_col.find({'familyCode': family_code, 'isRegistered': True})) if visitors_col is not None else []

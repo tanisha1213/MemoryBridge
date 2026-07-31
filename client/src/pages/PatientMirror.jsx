@@ -534,15 +534,18 @@ export default function PatientMirror() {
         // 🔴 3. CONFIRMED UNKNOWN PERSON
         // =========================================================
         unknownFrameCounterRef.current += 1;
+        console.log(`🟡 Unknown Frame Counter: ${unknownFrameCounterRef.current} | Lock State: ${isSnapshotLockedRef.current}`);
 
         // Trigger unknown snapshot only after 3 consecutive unknown frames (~3 seconds)
         if (unknownFrameCounterRef.current >= 3 && !isSnapshotLockedRef.current) {
+          console.log("🚀 TRIGGERING SNAPSHOT CAPTURE...");
           isSnapshotLockedRef.current = true; // Synchronous Lockout BEFORE Vercel API network call fires!
           speakUnknownAlert(currentLang);
           captureAndPostUnknownVisitor(Array.from(liveDescriptor), liveOutfitVector, false);
 
           if (snapshotCooldownTimerRef.current) clearTimeout(snapshotCooldownTimerRef.current);
           snapshotCooldownTimerRef.current = setTimeout(() => {
+            console.log("🔓 Unlocking Snapshot Lock after 20 seconds");
             isSnapshotLockedRef.current = false;
             unknownFrameCounterRef.current = 0;
           }, 20000); // 20-second cooldown lock
