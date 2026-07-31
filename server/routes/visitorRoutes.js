@@ -4,21 +4,19 @@ const fs = require('fs');
 const path = require('path');
 const Visitor = require('../models/Visitor');
 
-// Use global object to preserve memory across Vercel serverless function warm starts
+// Global memory cache across Vercel serverless function warm starts
 global._memoryBridgeVisitors = global._memoryBridgeVisitors || [];
 
 const DATA_DIR = path.join(__dirname, '../data');
 const FILE_PATH = path.join(DATA_DIR, 'visitors.json');
 
-// Safely load initial file storage if writeable
+// Load initial file storage if exists and writeable
 try {
   if (fs.existsSync(FILE_PATH) && global._memoryBridgeVisitors.length === 0) {
     const raw = fs.readFileSync(FILE_PATH, 'utf8');
     global._memoryBridgeVisitors = JSON.parse(raw);
   }
-} catch (e) {
-  // Ignore read errors on serverless environments
-}
+} catch (e) {}
 
 const saveLocalVisitors = () => {
   try {
@@ -26,9 +24,7 @@ const saveLocalVisitors = () => {
       fs.mkdirSync(DATA_DIR, { recursive: true });
     }
     fs.writeFileSync(FILE_PATH, JSON.stringify(global._memoryBridgeVisitors, null, 2), 'utf8');
-  } catch (e) {
-    // EROFS (Read-only file system on Vercel) -> Safely ignore disk write, keep in global memory
-  }
+  } catch (e) {}
 };
 
 const isDbConnected = () => {
@@ -36,57 +32,62 @@ const isDbConnected = () => {
   return mongoose.connection.readyState === 1;
 };
 
-// GET /api/visitors - Get all visitors (optional query ?registered=true/false)
+// GET /api/visitors
 router.get('/', async (req, res) => {
   try {
     const { registered } = req.query;
 
     if (isDbConnected()) {
-      let filter = {};
-      if (registered === 'true') filter.isRegistered = true;
-      if (registered === 'false') {
-        filter.$or = [{ isRegistered: false }, { isRegistered: { $exists: false } }, { isRegistered: null }];
+      try {
+        let filter = {};
+        if (registered === 'true') filter.isRegistered = true;
+        if (registered === 'false') {
+          filter.$or = [{ isRegistered: false }, { isRegistered: { $exists: false } }, { isRegistered: null }];
+        }
+        const visitors = await Visitor.find(filter).sort({ updatedAt: -1, createdAt: -1 });
+        return res.json(visitors);
+      } catch (dbErr) {
+        console.warn('MongoDB query error, falling back to memory:', dbErr.message);
       }
-
-      const visitors = await Visitor.find(filter).sort({ updatedAt: -1, createdAt: -1 });
-      return res.json(visitors);
-    } else {
-      let filtered = [...global._memoryBridgeVisitors];
-      if (registered === 'true') filtered = filtered.filter((v) => v.isRegistered === true);
-      if (registered === 'false') filtered = filtered.filter((v) => !v.isRegistered);
-
-      filtered.sort(
-        (a, b) =>
-          new Date(b.updatedAt || b.createdAt || b.lastSeen) -
-          new Date(a.updatedAt || a.createdAt || a.lastSeen)
-      );
-      return res.json(filtered);
     }
+
+    let filtered = [...global._memoryBridgeVisitors];
+    if (registered === 'true') filtered = filtered.filter((v) => v.isRegistered === true);
+    if (registered === 'false') filtered = filtered.filter((v) => !v.isRegistered);
+
+    filtered.sort(
+      (a, b) =>
+        new Date(b.updatedAt || b.createdAt || b.lastSeen) -
+        new Date(a.updatedAt || a.createdAt || a.lastSeen)
+    );
+    return res.json(filtered);
   } catch (error) {
     console.error('Error fetching visitors:', error);
     res.status(500).json({ error: 'Failed to fetch visitors' });
   }
 });
 
-// GET /api/visitors/unknown - Dedicated endpoint to fetch unrecognized visitor queue
+// GET /api/visitors/unknown
 router.get('/unknown', async (req, res) => {
   try {
     if (isDbConnected()) {
-      const unknowns = await Visitor.find({
-        $or: [{ isRegistered: false }, { isRegistered: { $exists: false } }, { isRegistered: null }],
-      }).sort({ lastSeen: -1, createdAt: -1 });
-      return res.json(unknowns);
-    } else {
-      const unknowns = global._memoryBridgeVisitors.filter((v) => !v.isRegistered);
-      unknowns.sort((a, b) => new Date(b.lastSeen || b.createdAt) - new Date(a.lastSeen || a.createdAt));
-      return res.json(unknowns);
+      try {
+        const unknowns = await Visitor.find({
+          $or: [{ isRegistered: false }, { isRegistered: { $exists: false } }, { isRegistered: null }],
+        }).sort({ lastSeen: -1, createdAt: -1 });
+        return res.json(unknowns);
+      } catch (dbErr) {}
     }
+
+    const unknowns = global._memoryBridgeVisitors.filter((v) => !v.isRegistered);
+    unknowns.sort((a, b) => new Date(b.lastSeen || b.createdAt) - new Date(a.lastSeen || a.createdAt));
+    return res.json(unknowns);
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch unknown visitors' });
   }
 });
 
-// POST /api/visitors/unknown - Log an unrecognized face snapshot
+// POST /api/visitors/unknown - Log unrecognized face snapshot
 router.post('/unknown', async (req, res) => {
   try {
     const { photoThumbnail, faceDescriptor } = req.body;
@@ -105,27 +106,30 @@ router.post('/unknown', async (req, res) => {
     };
 
     if (isDbConnected()) {
-      const newVisitor = new Visitor(newVisitorData);
-      await newVisitor.save();
-
-      global._memoryBridgeVisitors.unshift(newVisitor.toObject());
-      saveLocalVisitors();
-
-      return res.status(201).json(newVisitor);
-    } else {
-      const newVisitor = {
-        _id: 'mem_' + Date.now() + '_' + Math.random().toString(36).substr(2, 4),
-        ...newVisitorData,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      };
-      global._memoryBridgeVisitors.unshift(newVisitor);
-      saveLocalVisitors();
-      return res.status(201).json(newVisitor);
+      try {
+        const newVisitor = new Visitor(newVisitorData);
+        await newVisitor.save();
+        global._memoryBridgeVisitors.unshift(newVisitor.toObject());
+        saveLocalVisitors();
+        return res.status(201).json(newVisitor);
+      } catch (dbErr) {
+        console.warn('MongoDB save error on unknown visitor, falling back to memory store:', dbErr.message);
+      }
     }
+
+    // Resilient memory fallback
+    const newVisitor = {
+      _id: 'mem_' + Date.now() + '_' + Math.random().toString(36).substr(2, 4),
+      ...newVisitorData,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    global._memoryBridgeVisitors.unshift(newVisitor);
+    saveLocalVisitors();
+    return res.status(201).json(newVisitor);
   } catch (error) {
     console.error('Error logging unknown visitor:', error);
-    res.status(500).json({ error: 'Failed to log unknown visitor' });
+    res.status(500).json({ error: error.message || 'Failed to log unknown visitor' });
   }
 });
 
@@ -139,91 +143,91 @@ router.post('/register', async (req, res) => {
     }
 
     if (isDbConnected()) {
-      let visitor;
-      if (id) {
-        visitor = await Visitor.findById(id);
-      }
-      if (!visitor && photoThumbnail) {
-        visitor = await Visitor.findOne({ photoThumbnail });
-      }
+      try {
+        let visitor;
+        if (id) visitor = await Visitor.findById(id);
+        if (!visitor && photoThumbnail) visitor = await Visitor.findOne({ photoThumbnail });
 
-      if (visitor) {
-        visitor.name = name;
-        visitor.relationship = relationship;
-        visitor.contextNote = contextNote || '';
-        if (faceDescriptor && faceDescriptor.length) visitor.faceDescriptor = faceDescriptor;
-        if (photoThumbnail) visitor.photoThumbnail = photoThumbnail;
-        visitor.isRegistered = true;
-        visitor.lastSeen = new Date();
-        await visitor.save();
+        if (visitor) {
+          visitor.name = name;
+          visitor.relationship = relationship;
+          visitor.contextNote = contextNote || '';
+          if (faceDescriptor && faceDescriptor.length) visitor.faceDescriptor = faceDescriptor;
+          if (photoThumbnail) visitor.photoThumbnail = photoThumbnail;
+          visitor.isRegistered = true;
+          visitor.lastSeen = new Date();
+          await visitor.save();
 
-        const idx = global._memoryBridgeVisitors.findIndex(
-          (v) => String(v._id) === String(id) || v.photoThumbnail === photoThumbnail
-        );
-        if (idx !== -1) {
-          global._memoryBridgeVisitors[idx] = visitor.toObject();
+          const idx = global._memoryBridgeVisitors.findIndex(
+            (v) => String(v._id) === String(id) || v.photoThumbnail === photoThumbnail
+          );
+          if (idx !== -1) {
+            global._memoryBridgeVisitors[idx] = visitor.toObject();
+          } else {
+            global._memoryBridgeVisitors.unshift(visitor.toObject());
+          }
+          saveLocalVisitors();
+
+          return res.json(visitor);
         } else {
-          global._memoryBridgeVisitors.unshift(visitor.toObject());
+          const newVisitor = new Visitor({
+            name,
+            relationship,
+            contextNote: contextNote || '',
+            faceDescriptor: faceDescriptor || [],
+            photoThumbnail: photoThumbnail || '',
+            isRegistered: true,
+            lastSeen: new Date(),
+          });
+          await newVisitor.save();
+          global._memoryBridgeVisitors.unshift(newVisitor.toObject());
+          saveLocalVisitors();
+          return res.status(201).json(newVisitor);
         }
-        saveLocalVisitors();
-
-        return res.json(visitor);
-      } else {
-        const newVisitor = new Visitor({
-          name,
-          relationship,
-          contextNote: contextNote || '',
-          faceDescriptor: faceDescriptor || [],
-          photoThumbnail: photoThumbnail || '',
-          isRegistered: true,
-          lastSeen: new Date(),
-        });
-        await newVisitor.save();
-        global._memoryBridgeVisitors.unshift(newVisitor.toObject());
-        saveLocalVisitors();
-        return res.status(201).json(newVisitor);
+      } catch (dbErr) {
+        console.warn('MongoDB register error, using memory fallback:', dbErr.message);
       }
+    }
+
+    let existingIndex = -1;
+    if (id) {
+      existingIndex = global._memoryBridgeVisitors.findIndex((v) => String(v._id) === String(id));
+    }
+    if (existingIndex === -1 && photoThumbnail) {
+      existingIndex = global._memoryBridgeVisitors.findIndex((v) => v.photoThumbnail === photoThumbnail);
+    }
+
+    if (existingIndex !== -1) {
+      const item = global._memoryBridgeVisitors[existingIndex];
+      item.name = name;
+      item.relationship = relationship;
+      item.contextNote = contextNote || '';
+      if (faceDescriptor && faceDescriptor.length) item.faceDescriptor = faceDescriptor;
+      if (photoThumbnail) item.photoThumbnail = photoThumbnail;
+      item.isRegistered = true;
+      item.updatedAt = new Date();
+      saveLocalVisitors();
+      return res.json(item);
     } else {
-      let existingIndex = -1;
-      if (id) {
-        existingIndex = global._memoryBridgeVisitors.findIndex((v) => String(v._id) === String(id));
-      }
-      if (existingIndex === -1 && photoThumbnail) {
-        existingIndex = global._memoryBridgeVisitors.findIndex((v) => v.photoThumbnail === photoThumbnail);
-      }
-
-      if (existingIndex !== -1) {
-        const item = global._memoryBridgeVisitors[existingIndex];
-        item.name = name;
-        item.relationship = relationship;
-        item.contextNote = contextNote || '';
-        if (faceDescriptor && faceDescriptor.length) item.faceDescriptor = faceDescriptor;
-        if (photoThumbnail) item.photoThumbnail = photoThumbnail;
-        item.isRegistered = true;
-        item.updatedAt = new Date();
-        saveLocalVisitors();
-        return res.json(item);
-      } else {
-        const newVisitor = {
-          _id: 'mem_' + Date.now() + '_' + Math.random().toString(36).substr(2, 4),
-          name,
-          relationship,
-          contextNote: contextNote || '',
-          faceDescriptor: faceDescriptor || [],
-          photoThumbnail: photoThumbnail || '',
-          isRegistered: true,
-          lastSeen: new Date(),
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        };
-        global._memoryBridgeVisitors.unshift(newVisitor);
-        saveLocalVisitors();
-        return res.status(201).json(newVisitor);
-      }
+      const newVisitor = {
+        _id: 'mem_' + Date.now() + '_' + Math.random().toString(36).substr(2, 4),
+        name,
+        relationship,
+        contextNote: contextNote || '',
+        faceDescriptor: faceDescriptor || [],
+        photoThumbnail: photoThumbnail || '',
+        isRegistered: true,
+        lastSeen: new Date(),
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+      global._memoryBridgeVisitors.unshift(newVisitor);
+      saveLocalVisitors();
+      return res.status(201).json(newVisitor);
     }
   } catch (error) {
     console.error('Error registering visitor:', error);
-    res.status(500).json({ error: 'Failed to register visitor' });
+    res.status(500).json({ error: error.message || 'Failed to register visitor' });
   }
 });
 
@@ -232,7 +236,9 @@ router.delete('/:id', async (req, res) => {
   try {
     const { id } = req.params;
     if (isDbConnected()) {
-      await Visitor.findByIdAndDelete(id);
+      try {
+        await Visitor.findByIdAndDelete(id);
+      } catch (e) {}
     }
     global._memoryBridgeVisitors = global._memoryBridgeVisitors.filter((v) => String(v._id) !== String(id));
     saveLocalVisitors();
