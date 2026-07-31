@@ -363,12 +363,10 @@ export default function PatientMirror() {
         });
 
         // =========================================================
-        // 🟢 1. STRICT GATEKEEPER CHECK (Distance < 0.45)
+        // 🟢 1. RECOGNIZED USER (Strict Distance Threshold: 0.46)
         // =========================================================
-        if (bestMatch && minDistance < 0.45) {
-          // ✅ CONFIRMED MATCH (Distance is strictly under 0.45)
+        if (bestMatch && minDistance < 0.46) {
           unknownFrameCounterRef.current = 0;
-          isSnapshotLockedRef.current = false;
 
           if (activeRecognizedUserRef.current !== bestMatch._id) {
             activeRecognizedUserRef.current = bestMatch._id;
@@ -386,15 +384,22 @@ export default function PatientMirror() {
         }
 
         // =========================================================
-        // 🔴 2. REJECT: DISTANCE TOO HIGH (>= 0.45) -> UNKNOWN VISITOR
+        // 🟡 2. MOVEMENT / POSE SHIFT GUARD
         // =========================================================
-        // Clear any existing user lock immediately
-        activeRecognizedUserRef.current = null;
-        setRecognizedPerson(null);
-        setIsUnknownPresent(true);
-        setDetectionDistance(null);
+        // If we ALREADY recognized this person, hold the lock through minor movement
+        if (activeRecognizedUserRef.current !== null) {
+          unknownFrameCounterRef.current += 1;
+          
+          // Require at least 5 consecutive unknown frames (~4 seconds) before losing recognition
+          if (unknownFrameCounterRef.current < 5) {
+            return;
+          }
+          activeRecognizedUserRef.current = null;
+        }
 
-        // Increment unknown frame verification counter
+        // =========================================================
+        // 🔴 3. CONFIRMED UNKNOWN PERSON
+        // =========================================================
         unknownFrameCounterRef.current += 1;
 
         // Trigger unknown snapshot only after 3 consecutive unknown frames (~3 seconds)
@@ -406,7 +411,8 @@ export default function PatientMirror() {
           if (snapshotCooldownTimerRef.current) clearTimeout(snapshotCooldownTimerRef.current);
           snapshotCooldownTimerRef.current = setTimeout(() => {
             isSnapshotLockedRef.current = false;
-          }, 15000);
+            unknownFrameCounterRef.current = 0;
+          }, 20000); // 20-second cooldown lock
         }
       } catch (err) {
         // Silent catch
@@ -438,21 +444,21 @@ export default function PatientMirror() {
       isCancelled = true;
       if (timerId) clearTimeout(timerId);
     };
-  }, [cameraActive, isModelLoaded, registeredVisitors, currentLang]);
+  }, [cameraActive, isModelLoaded, registeredVisitors, currentLang, voicesLoaded]);
 
-  const calcEuclideanDistance = (arr1, arr2) => {
-    return Math.sqrt(
-      arr1.reduce((sum, val, i) => sum + Math.pow(val - (arr2[i] || 0), 2), 0)
-    );
-  };
+  const [voicesLoaded, setVoicesLoaded] = useState(false);
 
-  // Pre-load browser voices on mount
+  // Pre-load browser voices on mount & handle Vercel voice engine initialization
   useEffect(() => {
-    if ('speechSynthesis' in window) {
-      window.speechSynthesis.getVoices();
-      window.speechSynthesis.onvoiceschanged = () => {
-        window.speechSynthesis.getVoices();
-      };
+    const loadVoices = () => {
+      if ('speechSynthesis' in window) {
+        const voices = window.speechSynthesis.getVoices();
+        if (voices && voices.length > 0) setVoicesLoaded(true);
+      }
+    };
+    loadVoices();
+    if ('speechSynthesis' in window && window.speechSynthesis.onvoiceschanged !== undefined) {
+      window.speechSynthesis.onvoiceschanged = loadVoices;
     }
   }, []);
 
@@ -464,12 +470,21 @@ export default function PatientMirror() {
 
     const primaryLang = langCode.split('-')[0].toLowerCase();
 
-    // 1. Exact match (e.g. hi-IN or hi_IN)
+    // 1. Natural / Native Quality match
     let match = voices.find(
-      (v) => v.lang.toLowerCase() === langCode.toLowerCase() || v.lang.toLowerCase().replace('_', '-') === langCode.toLowerCase()
+      (v) =>
+        (v.lang.toLowerCase() === langCode.toLowerCase() || v.lang.toLowerCase().replace('_', '-') === langCode.toLowerCase()) &&
+        (v.name.includes('Google') || v.name.includes('Natural') || v.name.includes('India') || v.name.includes('Hemant') || v.name.includes('Kalpana'))
     );
 
-    // 2. Name search for Hindi/Marathi (Google हिन्दी, Microsoft Hemant, Microsoft Kalpana)
+    // 2. Exact match (e.g. hi-IN or hi_IN)
+    if (!match) {
+      match = voices.find(
+        (v) => v.lang.toLowerCase() === langCode.toLowerCase() || v.lang.toLowerCase().replace('_', '-') === langCode.toLowerCase()
+      );
+    }
+
+    // 3. Name search for Hindi/Marathi
     if (!match && (primaryLang === 'hi' || primaryLang === 'mr')) {
       match = voices.find(
         (v) =>
@@ -483,7 +498,7 @@ export default function PatientMirror() {
       );
     }
 
-    // 3. Prefix match (starts with 'hi' or 'mr')
+    // 4. Prefix match
     if (!match) {
       match = voices.find((v) => v.lang.toLowerCase().startsWith(primaryLang));
     }
