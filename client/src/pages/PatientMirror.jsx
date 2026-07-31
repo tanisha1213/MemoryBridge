@@ -317,6 +317,55 @@ export default function PatientMirror() {
     );
   };
 
+  // Helper to select best matching browser voice for language code
+  const getVoiceForLanguage = (langCode) => {
+    if (!('speechSynthesis' in window)) return null;
+    const voices = window.speechSynthesis.getVoices();
+    if (!voices || voices.length === 0) return null;
+
+    const primaryLang = langCode.split('-')[0].toLowerCase();
+
+    let match = voices.find((v) => v.lang.toLowerCase() === langCode.toLowerCase());
+    if (!match) {
+      match = voices.find((v) => v.lang.toLowerCase().startsWith(primaryLang));
+    }
+    if (!match) {
+      if (primaryLang === 'hi' || primaryLang === 'mr') {
+        match = voices.find((v) => v.name.toLowerCase().includes('hindi') || v.name.toLowerCase().includes('marathi') || v.lang.includes('hi') || v.lang.includes('mr'));
+      } else if (primaryLang === 'es') {
+        match = voices.find((v) => v.name.toLowerCase().includes('spanish') || v.name.toLowerCase().includes('español'));
+      }
+    }
+    return match || null;
+  };
+
+  const handleLanguageChange = (newLang) => {
+    setCurrentLang(newLang);
+    showToast(`🌐 Language set to ${TRANSLATIONS[newLang]?.label}`);
+
+    if ('speechSynthesis' in window) {
+      window.speechSynthesis.cancel();
+      setTimeout(() => {
+        const phrases = {
+          'en-US': 'Language set to English',
+          'hi-IN': 'भाषा हिंदी में सेट की गई है',
+          'mr-IN': 'भाषा मराठीमध्ये सेट केली आहे',
+          'es-ES': 'Idioma configurado en español',
+        };
+        const textToSpeak = phrases[newLang] || 'Language updated';
+        const utterance = new SpeechSynthesisUtterance(textToSpeak);
+        utterance.lang = newLang;
+        utterance.volume = 1.0;
+        utterance.rate = 0.88;
+
+        const matchedVoice = getVoiceForLanguage(newLang);
+        if (matchedVoice) utterance.voice = matchedVoice;
+
+        window.speechSynthesis.speak(utterance);
+      }, 100);
+    }
+  };
+
   // Multilingual SpeechSynthesis for RECOGNIZED Visitor
   const speakMemoryCue = (person) => {
     if (!('speechSynthesis' in window)) return;
@@ -348,13 +397,11 @@ export default function PatientMirror() {
       utterance.rate = 0.88;
       utterance.pitch = 1.0;
 
-      // Select voice matching language if available
-      const voices = window.speechSynthesis.getVoices();
-      const matchedVoice = voices.find((v) => v.lang.startsWith(currentLang.split('-')[0]));
+      const matchedVoice = getVoiceForLanguage(currentLang);
       if (matchedVoice) utterance.voice = matchedVoice;
 
       window.speechSynthesis.speak(utterance);
-    }, 60);
+    }, 80);
   };
 
   // Multilingual SpeechSynthesis for UNRECOGNIZED Visitor
@@ -374,12 +421,11 @@ export default function PatientMirror() {
       utterance.volume = 1.0;
       utterance.rate = 0.88;
 
-      const voices = window.speechSynthesis.getVoices();
-      const matchedVoice = voices.find((v) => v.lang.startsWith(currentLang.split('-')[0]));
+      const matchedVoice = getVoiceForLanguage(currentLang);
       if (matchedVoice) utterance.voice = matchedVoice;
 
       window.speechSynthesis.speak(utterance);
-    }, 60);
+    }, 80);
   };
 
   // Capture Base64 frame snapshot & Emit Socket.io UNKNOWN_VISITOR_EVENT
@@ -548,7 +594,7 @@ export default function PatientMirror() {
           {Object.keys(TRANSLATIONS).map((langKey) => (
             <button
               key={langKey}
-              onClick={() => setCurrentLang(langKey)}
+              onClick={() => handleLanguageChange(langKey)}
               className={`px-3 py-1.5 rounded-xl text-xs font-extrabold transition-all flex items-center gap-1.5 ${
                 currentLang === langKey
                   ? 'bg-[#0A192F] text-white shadow'
