@@ -675,11 +675,14 @@ export default function PatientMirror() {
       const photoThumbnail = canvas.toDataURL('image/jpeg', 0.75);
       const dummyDescriptor = Array.from({ length: 128 }, () => (Math.random() - 0.5) * 0.1);
       const userId = localStorage.getItem('mb_userId');
+      const accessCode = localStorage.getItem('mb_accessCode');
+      const headers = getAuthHeaders();
 
       // Emit Real-Time Socket Event to Caregiver Portal
       if (socketRef.current) {
         socketRef.current.emit('UNKNOWN_VISITOR_EVENT', {
           userId,
+          familyCode: accessCode,
           photoThumbnail,
           faceDescriptor: liveDescriptor || dummyDescriptor,
           outfitVector: liveOutfitVector || [],
@@ -693,10 +696,11 @@ export default function PatientMirror() {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          ...(userId ? { 'x-user-id': userId } : {}),
+          ...headers,
         },
         body: JSON.stringify({
           userId,
+          familyCode: accessCode,
           photoThumbnail,
           faceDescriptor: liveDescriptor || dummyDescriptor,
           outfitVector: liveOutfitVector || [],
