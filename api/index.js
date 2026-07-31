@@ -17,21 +17,9 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-global._memoryBridgeUsers = global._memoryBridgeUsers || [
-  {
-    _id: 'usr_demo_100',
-    email: 'demo@memorybridge.com',
-    password: 'password123',
-    patientName: 'Tanisha',
-    accessCode: 'MB-1001',
-    nativeLanguage: 'en-US',
-  },
-];
+global._memoryBridgeUsers = global._memoryBridgeUsers || [];
 global._memoryBridgeVisitors = global._memoryBridgeVisitors || [];
-global._memoryBridgeReminders = global._memoryBridgeReminders || [
-  { _id: 'rem_1', title: 'Drink Water', time: '2:00 PM', isCompleted: false, createdAt: new Date() },
-  { _id: 'rem_2', title: 'Take Afternoon Medication', time: '3:30 PM', isCompleted: false, createdAt: new Date() },
-];
+global._memoryBridgeReminders = global._memoryBridgeReminders || [];
 
 const userSchema = new mongoose.Schema({
   email: { type: String, required: true, unique: true },
@@ -476,6 +464,16 @@ app.all('*', async (req, res) => {
   }
 
   if (urlPath.includes('/reminders')) {
+    const parts = urlPath.split('/').filter(Boolean);
+    const lastPart = parts[parts.length - 1];
+    if (method === 'DELETE' && lastPart && lastPart !== 'reminders') {
+      if (isDbConnected()) {
+        try { await Reminder.findByIdAndDelete(lastPart); } catch (e) {}
+      }
+      global._memoryBridgeReminders = global._memoryBridgeReminders.filter((r) => String(r._id) !== String(lastPart));
+      return res.json({ message: 'Reminder deleted' });
+    }
+
     const userId = getUserId(req);
     const familyCode = getFamilyCode(req);
     if (method === 'GET') {

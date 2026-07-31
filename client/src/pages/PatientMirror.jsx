@@ -424,7 +424,17 @@ export default function PatientMirror() {
     );
   };
 
-  // Helper to select best matching browser voice for language code
+  // Pre-load browser voices on mount
+  useEffect(() => {
+    if ('speechSynthesis' in window) {
+      window.speechSynthesis.getVoices();
+      window.speechSynthesis.onvoiceschanged = () => {
+        window.speechSynthesis.getVoices();
+      };
+    }
+  }, []);
+
+  // Helper to select best matching browser voice for native language
   const getVoiceForLanguage = (langCode) => {
     if (!('speechSynthesis' in window)) return null;
     const voices = window.speechSynthesis.getVoices();
@@ -432,17 +442,30 @@ export default function PatientMirror() {
 
     const primaryLang = langCode.split('-')[0].toLowerCase();
 
-    let match = voices.find((v) => v.lang.toLowerCase() === langCode.toLowerCase());
+    // 1. Exact match (e.g. hi-IN or hi_IN)
+    let match = voices.find(
+      (v) => v.lang.toLowerCase() === langCode.toLowerCase() || v.lang.toLowerCase().replace('_', '-') === langCode.toLowerCase()
+    );
+
+    // 2. Name search for Hindi/Marathi (Google हिन्दी, Microsoft Hemant, Microsoft Kalpana)
+    if (!match && (primaryLang === 'hi' || primaryLang === 'mr')) {
+      match = voices.find(
+        (v) =>
+          v.name.includes('हिन्दी') ||
+          v.name.toLowerCase().includes('hindi') ||
+          v.name.toLowerCase().includes('marathi') ||
+          v.name.toLowerCase().includes('hemant') ||
+          v.name.toLowerCase().includes('kalpana') ||
+          v.lang.toLowerCase().includes('hi') ||
+          v.lang.toLowerCase().includes('mr')
+      );
+    }
+
+    // 3. Prefix match (starts with 'hi' or 'mr')
     if (!match) {
       match = voices.find((v) => v.lang.toLowerCase().startsWith(primaryLang));
     }
-    if (!match) {
-      if (primaryLang === 'hi' || primaryLang === 'mr') {
-        match = voices.find((v) => v.name.toLowerCase().includes('hindi') || v.name.toLowerCase().includes('marathi') || v.lang.includes('hi') || v.lang.includes('mr'));
-      } else if (primaryLang === 'es') {
-        match = voices.find((v) => v.name.toLowerCase().includes('spanish') || v.name.toLowerCase().includes('español'));
-      }
-    }
+
     return match || null;
   };
 

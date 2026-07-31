@@ -439,18 +439,20 @@ export const getLocalizedContextNote = (note, langCode) => {
 
   if (langCode === 'hi-IN') {
     translated = translated
+      .replace(/lives in\s+([^,]+),?\s*visits\s+(.*)/gi, 'यह $1 में रहते हैं और $2 मिलने आते हैं')
       .replace(/lives in/gi, 'में रहते हैं,')
       .replace(/lives at/gi, 'में रहते हैं,')
-      .replace(/visits/gi, 'और आते हैं')
+      .replace(/visits/gi, 'और मिलने आते हैं')
       .replace(/every/gi, 'हर')
-      .replace(/friend from/gi, 'से दोस्त,');
+      .replace(/friend from/gi, 'के मित्र हैं,');
   } else if (langCode === 'mr-IN') {
     translated = translated
+      .replace(/lives in\s+([^,]+),?\s*visits\s+(.*)/gi, 'हे $1 मध्ये राहतात आणि $2 भेट देतात')
       .replace(/lives in/gi, 'मध्ये राहतात,')
       .replace(/lives at/gi, 'येथे राहतात,')
       .replace(/visits/gi, 'आणि भेट देतात')
       .replace(/every/gi, 'प्रत्येक')
-      .replace(/friend from/gi, 'येथील मित्र,');
+      .replace(/friend from/gi, 'येथील मित्र आहेत,');
   }
 
   return translated;
