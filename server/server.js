@@ -51,11 +51,22 @@ app.use(async (req, res, next) => {
   next();
 });
 
-// API Routes
+// API Routes (mounted with and without /api prefix for Vercel serverless compatibility)
 app.use('/api/visitors', visitorRoutes);
-app.use('/api/reminders', reminderRoutes);
+app.use('/visitors', visitorRoutes);
 
-app.get('/api/health', (req, res) => {
+app.use('/api/reminders', reminderRoutes);
+app.use('/reminders', reminderRoutes);
+
+app.use('/api/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    app: 'MemoryBridge Server',
+    database: mongoose.connection.readyState === 1 ? 'connected' : 'in-memory fallback mode',
+    timestamp: new Date().toISOString(),
+  });
+});
+app.use('/health', (req, res) => {
   res.json({
     status: 'ok',
     app: 'MemoryBridge Server',
