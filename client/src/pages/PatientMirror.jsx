@@ -35,6 +35,7 @@ export default function PatientMirror() {
   const [currentLang, setCurrentLang] = useState(() => {
     return localStorage.getItem('mb_nativeLanguage') || 'hi-IN';
   });
+  const [isDataLoaded, setIsDataLoaded] = useState(false);
   const [isModelLoaded, setIsModelLoaded] = useState(false);
   const [modelStatus, setModelStatus] = useState('Initializing AI face detection...');
   const [cameraActive, setCameraActive] = useState(false);
@@ -263,7 +264,11 @@ export default function PatientMirror() {
         fetch('/api/reminders', { headers }),
       ]);
 
-      if (visitorsRes.ok) setRegisteredVisitors(await visitorsRes.json());
+      if (visitorsRes.ok) {
+        const vList = await visitorsRes.json();
+        setRegisteredVisitors(vList);
+        setIsDataLoaded(true);
+      }
       if (remindersRes.ok) setReminders(await remindersRes.json());
     } catch (err) {
       console.error('Error fetching patient mirror data:', err);

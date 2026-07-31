@@ -483,6 +483,45 @@ const handleMatchVectorPost = async (req, res) => {
   }
 };
 
+const handleRecognizeAndSnapshotPost = async (req, res) => {
+  try {
+    const familyCode = getFamilyCode(req);
+    const { image, photoThumbnail, saveSnapshot } = req.body;
+    const imageB64 = image || photoThumbnail;
+
+    if (!imageB64) {
+      return res.status(400).json({ error: 'image base64 string is required' });
+    }
+
+    if (saveSnapshot) {
+      const unknownDoc = {
+        userId: getUserId(req),
+        familyCode,
+        name: 'Unrecognized Person',
+        relationship: 'Unknown',
+        photoThumbnail: imageB64,
+        isRegistered: false,
+        status: 'PENDING_REVIEW',
+        createdAt: new Date()
+      };
+      if (isDbConnected()) {
+        try {
+          const newV = new Visitor(unknownDoc);
+          await newV.save();
+          global._memoryBridgeVisitors.unshift(newV.toObject());
+        } catch (e) {}
+      } else {
+        global._memoryBridgeVisitors.unshift({ _id: 'mem_' + Date.now(), ...unknownDoc });
+      }
+      return res.json({ status: 'UNKNOWN', snapshotSaved: true });
+    }
+
+    return res.json({ status: 'UNKNOWN', snapshotSaved: false });
+  } catch (err) {
+    return res.status(500).json({ error: err.message || 'Recognition failed' });
+  }
+};
+
 app.all('*', async (req, res) => {
   const urlPath = req.path || req.url || '';
   const method = req.method.toUpperCase();
@@ -499,6 +538,10 @@ app.all('*', async (req, res) => {
 
   if (urlPath.includes('/visitors/append-vector')) {
     if (method === 'POST') return handleAppendVectorPost(req, res);
+  }
+
+  if (urlPath.includes('/recognize-and-snapshot')) {
+    if (method === 'POST') return handleRecognizeAndSnapshotPost(req, res);
   }
 
   if (urlPath.includes('/visitors/unknown')) {

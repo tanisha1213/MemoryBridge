@@ -90,6 +90,66 @@ router.post(['/match-vector', '/:familyCode/match-vector'], async (req, res) => 
   }
 });
 
+// Express Route: Proxy or Execute Recognition & Snapshot
+router.post(['/recognize-and-snapshot', '/:familyCode/recognize-and-snapshot'], async (req, res) => {
+  try {
+    const familyCode = req.params.familyCode || getFamilyCode(req);
+    const { image, photoThumbnail, saveSnapshot } = req.body;
+    const imageB64 = image || photoThumbnail;
+
+    if (!imageB64) {
+      return res.status(400).json({ error: 'image base64 string is required' });
+    }
+
+    // 1. Try forwarding to Python dlib microservice on port 5001 first
+    try {
+      const axios = require('axios');
+      const pyRes = await axios.post('http://localhost:5001/api/visitors/recognize', {
+        familyCode,
+        image: imageB64,
+        saveSnapshot: !!saveSnapshot
+      }, { timeout: 2500 });
+
+      if (pyRes.status === 200 && pyRes.data) {
+        return res.json(pyRes.data);
+      }
+    } catch (pyErr) {}
+
+    // 2. Express Server Fallback: Query MongoDB Atlas
+    let registeredVisitors = [];
+    if (isDbConnected()) {
+      registeredVisitors = await Visitor.find({ familyCode, isRegistered: true }).lean();
+    } else {
+      registeredVisitors = global._memoryBridgeVisitors.filter(v => v.familyCode === familyCode && v.isRegistered);
+    }
+
+    if (!registeredVisitors || registeredVisitors.length === 0) {
+      if (saveSnapshot) {
+        const unknownDoc = {
+          familyCode,
+          name: 'Unrecognized Person',
+          relationship: 'Unknown',
+          photoThumbnail: imageB64,
+          isRegistered: false,
+          status: 'PENDING_REVIEW',
+          createdAt: new Date()
+        };
+        if (isDbConnected()) {
+          const newV = new Visitor(unknownDoc);
+          await newV.save();
+        } else {
+          global._memoryBridgeVisitors.unshift({ _id: 'mem_' + Date.now(), ...unknownDoc });
+        }
+      }
+      return res.json({ status: 'UNKNOWN', snapshotSaved: !!saveSnapshot });
+    }
+
+    return res.json({ status: 'UNKNOWN', snapshotSaved: false });
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'Recognition route failed' });
+  }
+});
+
 // GET /api/visitors - Account & Family Isolated Query
 router.get('/', async (req, res) => {
   try {
