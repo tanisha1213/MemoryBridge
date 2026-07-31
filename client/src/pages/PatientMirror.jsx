@@ -25,6 +25,7 @@ import {
 } from '../i18n/translations';
 
 const MODEL_CDN = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model/';
+const PYTHON_BACKEND_URL = import.meta.env.VITE_PYTHON_URL || 'http://localhost:5001';
 
 export default function PatientMirror() {
   const videoRef = useRef(null);
