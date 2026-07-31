@@ -418,3 +418,40 @@ export const getLocalizedRelationship = (relationship, langCode) => {
   }
   return relationship;
 };
+
+export const getLocalizedContextNote = (note, langCode) => {
+  if (!note || typeof note !== 'string') return '';
+  if (langCode === 'en-US') return note;
+
+  let translated = note;
+
+  const dayMaps = {
+    'hi-IN': { Sunday: 'रविवार', Monday: 'सोमवार', Tuesday: 'मंगलवार', Wednesday: 'बुधवार', Thursday: 'गुरुवार', Friday: 'शुक्रवार', Saturday: 'शनिवार' },
+    'mr-IN': { Sunday: 'रविवारी', Monday: 'सोमवारी', Tuesday: 'मंगळवारी', Wednesday: 'बुधवारी', Thursday: 'गुरुवारी', Friday: 'शुक्रवारी', Saturday: 'शनिवारी' },
+  };
+
+  const days = dayMaps[langCode] || dayMaps['hi-IN'];
+  Object.keys(days).forEach((d) => {
+    translated = translated.replace(new RegExp(`every ${d}`, 'gi'), langCode === 'hi-IN' ? `हर ${days[d]}` : `प्रत्येक ${days[d]}`);
+    translated = translated.replace(new RegExp(`on ${d}s?`, 'gi'), langCode === 'hi-IN' ? `${days[d]} को` : `${days[d]}`);
+    translated = translated.replace(new RegExp(d, 'gi'), days[d]);
+  });
+
+  if (langCode === 'hi-IN') {
+    translated = translated
+      .replace(/lives in/gi, 'में रहते हैं,')
+      .replace(/lives at/gi, 'में रहते हैं,')
+      .replace(/visits/gi, 'और आते हैं')
+      .replace(/every/gi, 'हर')
+      .replace(/friend from/gi, 'से दोस्त,');
+  } else if (langCode === 'mr-IN') {
+    translated = translated
+      .replace(/lives in/gi, 'मध्ये राहतात,')
+      .replace(/lives at/gi, 'येथे राहतात,')
+      .replace(/visits/gi, 'आणि भेट देतात')
+      .replace(/every/gi, 'प्रत्येक')
+      .replace(/friend from/gi, 'येथील मित्र,');
+  }
+
+  return translated;
+};

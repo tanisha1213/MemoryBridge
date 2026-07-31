@@ -20,7 +20,8 @@ import {
 import {
   TRANSLATIONS,
   getLocalizedText,
-  getLocalizedRelationship
+  getLocalizedRelationship,
+  getLocalizedContextNote
 } from '../i18n/translations';
 
 const MODEL_CDN = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model/';
@@ -415,21 +416,12 @@ export default function PatientMirror() {
 
     setTimeout(() => {
       const relLocalized = getLocalizedRelationship(person.relationship, currentLang);
-      let noteText = person.contextNote || '';
-
-      if (currentLang !== 'en-US' && noteText) {
-        noteText = noteText
-          .replace(/He lives in/gi, currentLang === 'hi-IN' ? 'वह रहते हैं' : 'ते राहतात')
-          .replace(/She lives in/gi, currentLang === 'hi-IN' ? 'वह रहती हैं' : 'त्या राहतात')
-          .replace(/and visits on/gi, currentLang === 'hi-IN' ? 'और आते हैं' : 'आणि येतात')
-          .replace(/Tuesdays/gi, currentLang === 'hi-IN' ? 'मंगलवार को' : 'मंगळवारी')
-          .replace(/Mondays/gi, currentLang === 'hi-IN' ? 'सोमवार को' : 'सोमवारी');
-      }
+      const noteLocalized = getLocalizedContextNote(person.contextNote || '', currentLang);
 
       const textToSpeak = t('recognizedAudio', {
         relationship: relLocalized,
         name: person.name,
-        contextNote: noteText,
+        contextNote: noteLocalized,
       });
 
       const utterance = new SpeechSynthesisUtterance(textToSpeak);
