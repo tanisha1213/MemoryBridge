@@ -434,59 +434,6 @@ export default function PatientMirror() {
         // Face is present -> reset empty frame counter
         noFaceFramesCountRef.current = 0;
 
-        // Try Python DeepFace Facenet512 Service (Port 5001) First
-        try {
-          const tempCanvas = document.createElement('canvas');
-          tempCanvas.width = 480;
-          tempCanvas.height = 360;
-          const tempCtx = tempCanvas.getContext('2d');
-          tempCtx.drawImage(video, 0, 0, tempCanvas.width, tempCanvas.height);
-          const imageBase64 = tempCanvas.toDataURL('image/jpeg', 0.6);
-
-          const shouldSaveSnapshot = unknownFrameCounterRef.current >= 3 && !isSnapshotLockedRef.current;
-
-          const pyRes = await fetch('http://localhost:5001/api/visitors/recognize', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ familyCode: accessCode, image: imageBase64, saveSnapshot: shouldSaveSnapshot }),
-          });
-
-          if (pyRes.ok) {
-            const pyData = await pyRes.json();
-            if (pyData.status === 'RECOGNIZED' && pyData.visitor) {
-              unknownFrameCounterRef.current = 0;
-              const matchedVisitor = {
-                _id: pyData.visitor.id,
-                name: pyData.visitor.name,
-                relationship: pyData.visitor.relationship,
-                contextNote: pyData.visitor.contextNote,
-              };
-              if (activeRecognizedUserRef.current !== matchedVisitor._id) {
-                activeRecognizedUserRef.current = matchedVisitor._id;
-                setRecognizedPerson(matchedVisitor);
-                setIsUnknownPresent(false);
-                setDetectionDistance(pyData.distance.toFixed(2));
-                speakRecognition(matchedVisitor, currentLang);
-              } else {
-                setRecognizedPerson(matchedVisitor);
-                setIsUnknownPresent(false);
-                setDetectionDistance(pyData.distance.toFixed(2));
-              }
-              return;
-            } else if (pyData.status === 'UNKNOWN') {
-              if (shouldSaveSnapshot) {
-                isSnapshotLockedRef.current = true;
-                speakUnknownAlert(currentLang);
-                if (snapshotCooldownTimerRef.current) clearTimeout(snapshotCooldownTimerRef.current);
-                snapshotCooldownTimerRef.current = setTimeout(() => {
-                  isSnapshotLockedRef.current = false;
-                  unknownFrameCounterRef.current = 0;
-                }, 20000);
-              }
-            }
-          }
-        } catch (pyErr) {}
-
         const box = detection.detection.box;
         const liveDescriptor = detection.descriptor;
         const liveOutfitVector = extractOutfitColorVector(video, box);
@@ -854,8 +801,9 @@ export default function PatientMirror() {
         });
       }
 
-      // REST API Backup Post
-      const res = await fetch('/api/visitors/unknown', {
+      // REST API Post to /api/visitors/:familyCode/unknown
+      const activeFamilyCode = accessCode || 'MB-1001';
+      const res = await fetch(`/api/visitors/${activeFamilyCode}/unknown`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -863,7 +811,7 @@ export default function PatientMirror() {
         },
         body: JSON.stringify({
           userId,
-          familyCode: accessCode,
+          familyCode: activeFamilyCode,
           photoThumbnail,
           faceDescriptor: liveDescriptor || dummyDescriptor,
           outfitVector: liveOutfitVector || [],
