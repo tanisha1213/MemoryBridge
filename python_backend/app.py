@@ -4,16 +4,23 @@ import cv2
 import numpy as np
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+from datetime import datetime
+
+# 1. IMPORT FACE_RECOGNITION / DLIB WITH FALLBACK
+FACE_REC_AVAILABLE = False
+try:
+    import face_recognition
+    FACE_REC_AVAILABLE = True
+    print("✅ dlib face_recognition engine loaded successfully!")
+except ImportError as e:
+    print(f"⚠️ Notice: face_recognition (dlib) module not installed ({e}). Running in fallback mode.")
 
 try:
-    from mtcnn import MTCNN
-    from deepface import DeepFace
     from pymongo import MongoClient
-    from scipy.spatial.distance import cosine
-    DEEPFACE_AVAILABLE = True
-except ImportError as e:
-    DEEPFACE_AVAILABLE = False
-    print(f"⚠️ Warning: DeepFace or dependencies not installed ({e}). Running in fallback mode.")
+    MONGO_AVAILABLE = True
+except ImportError:
+    MONGO_AVAILABLE = False
+    print("⚠️ Notice: pymongo module not installed.")
 
 app = Flask(__name__)
 CORS(app)  # Enable CORS for Express/React client calls
@@ -28,80 +35,71 @@ db = None
 visitors_col = None
 unknown_queue_col = None
 
-if DEEPFACE_AVAILABLE:
+if MONGO_AVAILABLE:
     try:
         client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=4000)
         db = client['memorybridge']
         visitors_col = db['visitors']
         unknown_queue_col = db['unknown_queues']
-        detector = MTCNN()
+        print("✅ MongoDB Atlas connected in Python microservice.")
     except Exception as e:
         print(f"⚠️ MongoDB Connection Exception: {e}")
 
-def base64_to_cv2(b64_string):
+def base64_to_rgb_image(b64_string):
     encoded_data = b64_string.split(',')[1] if ',' in b64_string else b64_string
     nparr = np.frombuffer(base64.b64decode(encoded_data), np.uint8)
-    return cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    bgr_img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    return cv2.cvtColor(bgr_img, cv2.COLOR_BGR2RGB)
 
 @app.route('/health', methods=['GET'])
 def health_check():
     return jsonify({
         'status': 'ok',
-        'service': 'MemoryBridge Python DeepFace Facenet512 Backend',
-        'deepface_available': DEEPFACE_AVAILABLE,
+        'service': 'MemoryBridge Python dlib ResNet Face Recognition Backend',
+        'face_rec_available': FACE_REC_AVAILABLE,
         'db_connected': visitors_col is not None
     })
 
 # ----------------- 1. REGISTER NEW VISITOR -----------------
 @app.route('/api/visitors/register', methods=['POST'])
 def register_visitor():
-    if not DEEPFACE_AVAILABLE or visitors_col is None:
-        return jsonify({'error': 'DeepFace backend or MongoDB is not available'}), 503
+    if not FACE_REC_AVAILABLE or visitors_col is None:
+        return jsonify({'error': 'face_recognition module or MongoDB is not available'}), 503
 
     try:
         data = request.json or {}
-        family_code = data.get('familyCode')
+        family_code = data.get('familyCode', 'MB-1001')
         name = data.get('name')
         relationship = data.get('relationship', 'Visitor')
         context_note = data.get('contextNote', '')
         image_b64 = data.get('image') or data.get('photoThumbnail')
 
         if not family_code or not name or not image_b64:
-            return jsonify({'error': 'Missing required fields (familyCode, name, image)'}), 400
+            return jsonify({'error': 'Missing required parameters'}), 400
 
-        img = base64_to_cv2(image_b64)
-        rgb_img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        rgb_img = base64_to_rgb_image(image_b64)
 
-        faces = detector.detect_faces(rgb_img)
-        if not faces:
-            return jsonify({'error': 'No face detected in image'}), 400
+        # Generate 128-D encoding using dlib ResNet
+        encodings = face_recognition.face_encodings(rgb_img)
+        if not encodings:
+            return jsonify({'error': 'No face found in image'}), 400
 
-        x, y, w, h = faces[0]['box']
-        x, y = max(0, x), max(0, y)
-        face_img = rgb_img[y:y+h, x:x+w]
-
-        # Extract 512-D Facenet512 Embedding
-        embedding_objs = DeepFace.represent(
-            face_img, 
-            model_name='Facenet512', 
-            detector_backend='skip',
-            enforce_detection=False
-        )
-        embedding = embedding_objs[0]['embedding']
+        encoding_list = encodings[0].tolist()
 
         visitor_doc = {
             'familyCode': family_code,
             'name': name,
             'relationship': relationship,
             'contextNote': context_note,
-            'embedding': embedding,
+            'encoding': encoding_list,
+            'faceDescriptor': encoding_list,
             'photoThumbnail': image_b64,
-            'isRegistered': True
+            'isRegistered': True,
+            'createdAt': datetime.utcnow()
         }
 
         result = visitors_col.insert_one(visitor_doc)
 
-        # Delete from unknown queue if registering from snapshot
         if data.get('unknownId'):
             try:
                 from bson import ObjectId
@@ -116,108 +114,122 @@ def register_visitor():
         return jsonify({'error': str(e)}), 500
 
 
-# ----------------- 2. RECOGNIZE VISITOR -----------------
+# ----------------- 2. RECOGNIZE & SNAPSHOT API -----------------
 @app.route('/api/visitors/recognize', methods=['POST'])
 def recognize_visitor():
-    if not DEEPFACE_AVAILABLE or visitors_col is None:
-        return jsonify({'status': 'ERROR', 'message': 'DeepFace backend or MongoDB is not available'}), 503
+    if not FACE_REC_AVAILABLE or visitors_col is None:
+        return jsonify({'status': 'ERROR', 'message': 'face_recognition module or MongoDB is not available'}), 503
 
     try:
         data = request.json or {}
-        family_code = data.get('familyCode')
+        family_code = data.get('familyCode', 'MB-1001')
         image_b64 = data.get('image') or data.get('photoThumbnail')
+        save_snapshot = data.get('saveSnapshot', False)
 
         if not family_code or not image_b64:
-            return jsonify({'status': 'ERROR', 'message': 'Missing parameters (familyCode, image)'}), 400
+            return jsonify({'status': 'ERROR', 'message': 'Missing parameters'}), 400
 
-        img = base64_to_cv2(image_b64)
-        rgb_img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        rgb_img = base64_to_rgb_image(image_b64)
 
-        faces = detector.detect_faces(rgb_img)
-        if not faces:
+        # 1. Find face encodings in current camera frame
+        unknown_encodings = face_recognition.face_encodings(rgb_img)
+
+        if not unknown_encodings:
             return jsonify({'status': 'NO_FACE'})
 
-        x, y, w, h = faces[0]['box']
-        x, y = max(0, x), max(0, y)
-        face_img = rgb_img[y:y+h, x:x+w]
+        unknown_encoding = unknown_encodings[0]
 
-        # Extract 512-D Embedding
-        embedding_objs = DeepFace.represent(
-            face_img, 
-            model_name='Facenet512', 
-            detector_backend='skip',
-            enforce_detection=False
-        )
-        live_embedding = embedding_objs[0]['embedding']
-
-        # Fetch visitors STRICTLY for this familyCode
+        # 2. Fetch registered family visitors from MongoDB
         registered_visitors = list(visitors_col.find({'familyCode': family_code, 'isRegistered': True}))
 
-        best_match = None
-        min_distance = 1.0
-
-        for visitor in registered_visitors:
-            stored_embedding = visitor.get('embedding')
-            if stored_embedding:
-                dist = cosine(live_embedding, stored_embedding)
-                if dist < min_distance:
-                    min_distance = dist
-                    best_match = visitor
-
-        # 🟢 CASE A: RECOGNIZED VISITOR (Distance < 0.35)
-        if best_match and min_distance < 0.35:
-            return jsonify({
-                'status': 'RECOGNIZED',
-                'distance': float(min_distance),
-                'visitor': {
-                    'id': str(best_match['_id']),
-                    'name': best_match.get('name', 'Visitor'),
-                    'relationship': best_match.get('relationship', 'Visitor'),
-                    'contextNote': best_match.get('contextNote', '')
-                }
-            })
-
-        # 🔴 CASE B: UNKNOWN VISITOR -> SAVE DIRECTLY TO MONGODB IF saveSnapshot IS TRUE
-        else:
-            save_snapshot = data.get('saveSnapshot', False)
-            snapshot_id = None
-
+        if not registered_visitors:
             if save_snapshot and unknown_queue_col is not None:
-                from datetime import datetime
                 unknown_doc = {
                     'familyCode': family_code,
                     'name': 'Unrecognized Person',
                     'relationship': 'Unknown',
-                    'contextNote': 'Captured by DeepFace camera',
+                    'contextNote': 'Captured by camera',
                     'photoThumbnail': image_b64,
-                    'embedding': live_embedding,
+                    'encoding': unknown_encoding.tolist(),
                     'isRegistered': False,
                     'status': 'PENDING_REVIEW',
-                    'lastSeen': datetime.utcnow(),
                     'createdAt': datetime.utcnow()
                 }
-                
-                try:
-                    res_unknown = unknown_queue_col.insert_one(unknown_doc)
-                    snapshot_id = str(res_unknown.inserted_id)
-                    if visitors_col is not None:
-                        visitors_col.insert_one(unknown_doc)
-                    print(f"📸 Saved unknown snapshot to MongoDB! Doc ID: {snapshot_id}")
-                except Exception as db_err:
-                    print(f"⚠️ MongoDB Insert Error: {db_err}")
+                unknown_queue_col.insert_one(unknown_doc)
+            return jsonify({'status': 'UNKNOWN', 'snapshotSaved': save_snapshot})
+
+        # Build list of known encodings & visitor objects
+        known_encodings = []
+        valid_visitors = []
+        for v in registered_visitors:
+            enc = v.get('encoding') or v.get('faceDescriptor')
+            if enc and len(enc) == 128:
+                known_encodings.append(np.array(enc))
+                valid_visitors.append(v)
+
+        if not known_encodings:
+            if save_snapshot and unknown_queue_col is not None:
+                unknown_doc = {
+                    'familyCode': family_code,
+                    'photoThumbnail': image_b64,
+                    'encoding': unknown_encoding.tolist(),
+                    'isRegistered': False,
+                    'createdAt': datetime.utcnow()
+                }
+                unknown_queue_col.insert_one(unknown_doc)
+            return jsonify({'status': 'UNKNOWN', 'snapshotSaved': save_snapshot})
+
+        # 3. Compare faces using dlib with strict tolerance (0.50 for 99.38% precision)
+        matches = face_recognition.compare_faces(known_encodings, unknown_encoding, tolerance=0.50)
+        face_distances = face_recognition.face_distance(known_encodings, unknown_encoding)
+
+        best_match_index = int(np.argmin(face_distances))
+
+        if matches[best_match_index]:
+            matched_visitor = valid_visitors[best_match_index]
+            return jsonify({
+                'status': 'RECOGNIZED',
+                'distance': float(face_distances[best_match_index]),
+                'visitor': {
+                    'id': str(matched_visitor['_id']),
+                    'name': matched_visitor.get('name', 'Visitor'),
+                    'relationship': matched_visitor.get('relationship', 'Visitor'),
+                    'contextNote': matched_visitor.get('contextNote', '')
+                }
+            })
+        else:
+            # 🔴 UNKNOWN PERSON -> SAVE SNAPSHOT TO MONGODB
+            snapshot_id = None
+            if save_snapshot and unknown_queue_col is not None:
+                unknown_doc = {
+                    'familyCode': family_code,
+                    'name': 'Unrecognized Person',
+                    'relationship': 'Unknown',
+                    'contextNote': 'Captured by camera',
+                    'photoThumbnail': image_b64,
+                    'encoding': unknown_encoding.tolist(),
+                    'isRegistered': False,
+                    'status': 'PENDING_REVIEW',
+                    'createdAt': datetime.utcnow()
+                }
+                res_unknown = unknown_queue_col.insert_one(unknown_doc)
+                if visitors_col is not None:
+                    visitors_col.insert_one(unknown_doc)
+                snapshot_id = str(res_unknown.inserted_id)
+                print("📸 Saved unknown snapshot to MongoDB via face_recognition!")
 
             return jsonify({
                 'status': 'UNKNOWN',
-                'distance': float(min_distance),
+                'distance': float(face_distances[best_match_index]),
                 'snapshotSaved': save_snapshot,
                 'snapshotId': snapshot_id
             })
 
     except Exception as e:
-        print("Recognition Error:", str(e))
+        print("Registration/Recognition Error:", str(e))
         return jsonify({'status': 'ERROR', 'message': str(e)}), 500
 
 if __name__ == '__main__':
     port = int(os.getenv("PORT", 5001))
-    print(f"🚀 MemoryBridge DeepFace Service starting on port {port}...")
+    print(f"🚀 MemoryBridge dlib ResNet Service starting on port {port}...")
     app.run(host='0.0.0.0', port=port, debug=True)
