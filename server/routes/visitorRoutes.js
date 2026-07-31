@@ -30,9 +30,13 @@ const isDbConnected = () => {
   return mongoose.connection.readyState === 1;
 };
 
-// Helper to extract userId
+// Helper to extract userId and familyCode
 const getUserId = (req) => {
   return req.headers['x-user-id'] || req.query.userId || req.body?.userId || null;
+};
+
+const getFamilyCode = (req) => {
+  return req.headers['x-family-code'] || req.query.familyCode || req.body?.familyCode || null;
 };
 
 // GET /api/visitors
@@ -40,11 +44,20 @@ router.get('/', async (req, res) => {
   try {
     const { registered } = req.query;
     const userId = getUserId(req);
+    const familyCode = getFamilyCode(req);
 
     if (isDbConnected()) {
       try {
         let filter = {};
-        if (userId) filter.userId = userId;
+        if (userId) {
+          filter.userId = userId;
+        } else if (familyCode) {
+          filter.familyCode = familyCode;
+        } else {
+          // Security isolation: Return empty array if unauthenticated
+          return res.json([]);
+        }
+
         if (registered === 'true') filter.isRegistered = true;
         if (registered === 'false') {
           filter.$or = [{ isRegistered: false }, { isRegistered: { $exists: false } }, { isRegistered: null }];
@@ -56,8 +69,12 @@ router.get('/', async (req, res) => {
       }
     }
 
-    let filtered = [...global._memoryBridgeVisitors];
-    if (userId) filtered = filtered.filter((v) => !v.userId || String(v.userId) === String(userId));
+    let filtered = global._memoryBridgeVisitors.filter((v) => {
+      if (userId && String(v.userId) === String(userId)) return true;
+      if (familyCode && String(v.familyCode) === String(familyCode)) return true;
+      return false;
+    });
+
     if (registered === 'true') filtered = filtered.filter((v) => v.isRegistered === true);
     if (registered === 'false') filtered = filtered.filter((v) => !v.isRegistered);
 
@@ -77,19 +94,31 @@ router.get('/', async (req, res) => {
 router.get('/unknown', async (req, res) => {
   try {
     const userId = getUserId(req);
+    const familyCode = getFamilyCode(req);
+
     if (isDbConnected()) {
       try {
         let filter = {
           $or: [{ isRegistered: false }, { isRegistered: { $exists: false } }, { isRegistered: null }],
         };
-        if (userId) filter.userId = userId;
+        if (userId) {
+          filter.userId = userId;
+        } else if (familyCode) {
+          filter.familyCode = familyCode;
+        } else {
+          return res.json([]);
+        }
         const unknowns = await Visitor.find(filter).sort({ lastSeen: -1, createdAt: -1 });
         return res.json(unknowns);
       } catch (dbErr) {}
     }
 
-    let unknowns = global._memoryBridgeVisitors.filter((v) => !v.isRegistered);
-    if (userId) unknowns = unknowns.filter((v) => !v.userId || String(v.userId) === String(userId));
+    let unknowns = global._memoryBridgeVisitors.filter((v) => {
+      if (v.isRegistered) return false;
+      if (userId && String(v.userId) === String(userId)) return true;
+      if (familyCode && String(v.familyCode) === String(familyCode)) return true;
+      return false;
+    });
     unknowns.sort((a, b) => new Date(b.lastSeen || b.createdAt) - new Date(a.lastSeen || a.createdAt));
     return res.json(unknowns);
   } catch (error) {

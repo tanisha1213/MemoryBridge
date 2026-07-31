@@ -69,7 +69,10 @@ export default function CaregiverDashboard() {
   const t = (key, params = {}) => getLocalizedText(caregiverLang, key, params);
 
   const getAuthHeaders = () => {
-    return userId ? { 'x-user-id': userId } : {};
+    return {
+      ...(userId ? { 'x-user-id': userId } : {}),
+      ...(accessCode ? { 'x-family-code': accessCode } : {}),
+    };
   };
 
   const showNotification = (msg) => {
@@ -109,6 +112,7 @@ export default function CaregiverDashboard() {
 
     socket.on('connect', () => {
       setSocketConnected(true);
+      socket.emit('JOIN_FAMILY_ROOM', { userId, accessCode });
     });
 
     socket.on('disconnect', () => {

@@ -124,6 +124,9 @@ export default function PatientMirror() {
 
     socket.on('connect', () => {
       setSocketConnected(true);
+      const userId = localStorage.getItem('mb_userId');
+      const accessCode = localStorage.getItem('mb_accessCode');
+      socket.emit('JOIN_FAMILY_ROOM', { userId, accessCode });
     });
 
     socket.on('disconnect', () => {

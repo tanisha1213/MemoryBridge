@@ -67,12 +67,28 @@ app.use(async (req, res, next) => {
 io.on('connection', (socket) => {
   console.log('⚡ Socket client connected:', socket.id);
 
+  socket.on('JOIN_FAMILY_ROOM', ({ userId, accessCode, familyCode }) => {
+    const roomKey = userId || familyCode || accessCode;
+    if (roomKey) {
+      socket.join(roomKey);
+      console.log(`🔒 Socket ${socket.id} joined room: ${roomKey}`);
+    }
+  });
+
   socket.on('UNKNOWN_VISITOR_EVENT', async (data) => {
     console.log('🚨 UNKNOWN_VISITOR_EVENT received from patient camera');
-    io.emit('UNKNOWN_VISITOR_DETECTED', {
-      ...data,
-      timestamp: new Date(),
-    });
+    const targetRoom = data.userId || data.familyCode || data.accessCode;
+    if (targetRoom) {
+      io.to(targetRoom).emit('UNKNOWN_VISITOR_DETECTED', {
+        ...data,
+        timestamp: new Date(),
+      });
+    } else {
+      io.emit('UNKNOWN_VISITOR_DETECTED', {
+        ...data,
+        timestamp: new Date(),
+      });
+    }
 
     try {
       if (mongoose.connection.readyState === 1) {
@@ -86,17 +102,21 @@ io.on('connection', (socket) => {
   });
 
   socket.on('MISSED_MEDICATION_EVENT', async (data) => {
-    io.emit('MISSED_MEDICATION_ALERT', {
-      ...data,
-      timestamp: new Date(),
-    });
+    const targetRoom = data.userId || data.familyCode;
+    if (targetRoom) {
+      io.to(targetRoom).emit('MISSED_MEDICATION_ALERT', { ...data, timestamp: new Date() });
+    } else {
+      io.emit('MISSED_MEDICATION_ALERT', { ...data, timestamp: new Date() });
+    }
   });
 
   socket.on('HYDRATION_CHECK_EVENT', async (data) => {
-    io.emit('HYDRATION_CHECK_ALERT', {
-      ...data,
-      timestamp: new Date(),
-    });
+    const targetRoom = data.userId || data.familyCode;
+    if (targetRoom) {
+      io.to(targetRoom).emit('HYDRATION_CHECK_ALERT', { ...data, timestamp: new Date() });
+    } else {
+      io.emit('HYDRATION_CHECK_ALERT', { ...data, timestamp: new Date() });
+    }
   });
 
   socket.on('disconnect', () => {

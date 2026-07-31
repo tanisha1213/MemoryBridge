@@ -149,11 +149,22 @@ const handleAuthCode = async (req, res) => {
   return res.status(404).json({ error: 'Invalid Access Code' });
 };
 
-async function getVisitors(registeredQuery, userId) {
+const getFamilyCode = (req) => {
+  return req.headers['x-family-code'] || req.query.familyCode || req.body?.familyCode || null;
+};
+
+async function getVisitors(registeredQuery, userId, familyCode) {
   if (isDbConnected()) {
     try {
       let filter = {};
-      if (userId) filter.userId = userId;
+      if (userId) {
+        filter.userId = userId;
+      } else if (familyCode) {
+        filter.familyCode = familyCode;
+      } else {
+        return [];
+      }
+
       if (registeredQuery === 'true') filter.isRegistered = true;
       if (registeredQuery === 'false') {
         filter.$or = [{ isRegistered: false }, { isRegistered: { $exists: false } }, { isRegistered: null }];
@@ -162,8 +173,11 @@ async function getVisitors(registeredQuery, userId) {
     } catch (e) {}
   }
 
-  let filtered = [...global._memoryBridgeVisitors];
-  if (userId) filtered = filtered.filter((v) => !v.userId || String(v.userId) === String(userId));
+  let filtered = global._memoryBridgeVisitors.filter((v) => {
+    if (userId && String(v.userId) === String(userId)) return true;
+    if (familyCode && String(v.familyCode) === String(familyCode)) return true;
+    return false;
+  });
   if (registeredQuery === 'true') filtered = filtered.filter((v) => v.isRegistered === true);
   if (registeredQuery === 'false') filtered = filtered.filter((v) => !v.isRegistered);
   filtered.sort((a, b) => new Date(b.updatedAt || b.createdAt || b.lastSeen) - new Date(a.updatedAt || a.createdAt || a.lastSeen));
@@ -173,7 +187,8 @@ async function getVisitors(registeredQuery, userId) {
 const handleVisitorsGet = async (req, res) => {
   try {
     const userId = getUserId(req);
-    const list = await getVisitors(req.query.registered, userId);
+    const familyCode = getFamilyCode(req);
+    const list = await getVisitors(req.query.registered, userId, familyCode);
     return res.json(list);
   } catch (err) {
     return res.status(500).json({ error: 'Failed to fetch visitors' });
