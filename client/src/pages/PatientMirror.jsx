@@ -834,11 +834,11 @@ export default function PatientMirror() {
             : '✅ Unrecognized visitor logged in Caregiver Queue!'
         );
       } else {
-        hasCapturedForCurrentUnknownRef.current = false;
+        isSnapshotLockedRef.current = false;
       }
     } catch (err) {
       console.error('Failed to post unknown snapshot:', err);
-      hasCapturedForCurrentUnknownRef.current = false;
+      isSnapshotLockedRef.current = false;
     }
   };
 

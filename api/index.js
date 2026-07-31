@@ -523,6 +523,10 @@ const handleRecognizeAndSnapshotPost = async (req, res) => {
 };
 
 app.all('*', async (req, res) => {
+  try {
+    await connectDB().catch(() => {});
+  } catch (e) {}
+
   const urlPath = req.path || req.url || '';
   const method = req.method.toUpperCase();
 
@@ -544,7 +548,7 @@ app.all('*', async (req, res) => {
     if (method === 'POST') return handleRecognizeAndSnapshotPost(req, res);
   }
 
-  if (urlPath.includes('/visitors/unknown')) {
+  if (urlPath.includes('/visitors/unknown') || urlPath.includes('/visitors/unknowns')) {
     if (method === 'GET') return handleVisitorsGet({ ...req, query: { ...req.query, registered: 'false' } }, res);
     if (method === 'POST') return handleUnknownPost(req, res);
   }
