@@ -30,38 +30,33 @@ const isDbConnected = () => {
   return mongoose.connection.readyState === 1;
 };
 
-// Helper to extract userId and familyCode
-const getUserId = (req) => {
-  return req.headers['x-user-id'] || req.query.userId || req.body?.userId || null;
-};
+// Helper to extract userId and familyCode from request
+const getUserId = (req) => req.headers['x-user-id'] || req.query.userId || req.body?.userId || null;
+const getFamilyCode = (req) => req.headers['x-family-code'] || req.query.familyCode || req.body?.familyCode || null;
 
-const getFamilyCode = (req) => {
-  return req.headers['x-family-code'] || req.query.familyCode || req.body?.familyCode || null;
-};
-
-// GET /api/visitors
+// GET /api/visitors - Account & Family Isolated Query
 router.get('/', async (req, res) => {
   try {
     const { registered } = req.query;
     const userId = getUserId(req);
     const familyCode = getFamilyCode(req);
 
+    if (!userId && !familyCode) {
+      return res.json([]);
+    }
+
     if (isDbConnected()) {
       try {
-        let filter = {};
-        if (userId) {
-          filter.userId = userId;
-        } else if (familyCode) {
-          filter.familyCode = familyCode;
-        } else {
-          // Security isolation: Return empty array if unauthenticated
-          return res.json([]);
-        }
+        let filter = {
+          $or: [
+            ...(userId ? [{ userId }] : []),
+            ...(familyCode ? [{ familyCode }] : []),
+          ],
+        };
 
         if (registered === 'true') filter.isRegistered = true;
-        if (registered === 'false') {
-          filter.$or = [{ isRegistered: false }, { isRegistered: { $exists: false } }, { isRegistered: null }];
-        }
+        if (registered === 'false') filter.isRegistered = false;
+
         const visitors = await Visitor.find(filter).sort({ updatedAt: -1, createdAt: -1 });
         return res.json(visitors);
       } catch (dbErr) {
@@ -78,11 +73,7 @@ router.get('/', async (req, res) => {
     if (registered === 'true') filtered = filtered.filter((v) => v.isRegistered === true);
     if (registered === 'false') filtered = filtered.filter((v) => !v.isRegistered);
 
-    filtered.sort(
-      (a, b) =>
-        new Date(b.updatedAt || b.createdAt || b.lastSeen) -
-        new Date(a.updatedAt || a.createdAt || a.lastSeen)
-    );
+    filtered.sort((a, b) => new Date(b.updatedAt || b.createdAt || b.lastSeen) - new Date(a.updatedAt || a.createdAt || a.lastSeen));
     return res.json(filtered);
   } catch (error) {
     console.error('Error fetching visitors:', error);
@@ -96,18 +87,19 @@ router.get('/unknown', async (req, res) => {
     const userId = getUserId(req);
     const familyCode = getFamilyCode(req);
 
+    if (!userId && !familyCode) {
+      return res.json([]);
+    }
+
     if (isDbConnected()) {
       try {
         let filter = {
-          $or: [{ isRegistered: false }, { isRegistered: { $exists: false } }, { isRegistered: null }],
+          isRegistered: false,
+          $or: [
+            ...(userId ? [{ userId }] : []),
+            ...(familyCode ? [{ familyCode }] : []),
+          ],
         };
-        if (userId) {
-          filter.userId = userId;
-        } else if (familyCode) {
-          filter.familyCode = familyCode;
-        } else {
-          return res.json([]);
-        }
         const unknowns = await Visitor.find(filter).sort({ lastSeen: -1, createdAt: -1 });
         return res.json(unknowns);
       } catch (dbErr) {}
@@ -126,22 +118,26 @@ router.get('/unknown', async (req, res) => {
   }
 });
 
-// POST /api/visitors/unknown - Log unrecognized face snapshot
+// POST /api/visitors/unknown - Log unrecognized face snapshot with Account Isolation
 router.post('/unknown', async (req, res) => {
   try {
     const { photoThumbnail, faceDescriptor, outfitVector } = req.body;
     const userId = getUserId(req);
+    const familyCode = getFamilyCode(req);
 
     if (!photoThumbnail) {
       return res.status(400).json({ error: 'photoThumbnail is required' });
     }
 
+    const initialDescriptors = faceDescriptor && faceDescriptor.length === 128 ? [faceDescriptor] : [];
     const newVisitorData = {
       userId,
+      familyCode,
       name: 'Unrecognized Person',
       relationship: 'Unknown',
       contextNote: 'Captured by patient camera',
       faceDescriptor: faceDescriptor || [],
+      faceDescriptors: initialDescriptors,
       outfitVector: outfitVector || [],
       photoThumbnail,
       isRegistered: false,
@@ -175,11 +171,12 @@ router.post('/unknown', async (req, res) => {
   }
 });
 
-// POST /api/visitors/append-vector - Merge new 128-D vector to existing profile (Continuous Learning)
+// POST /api/visitors/append-vector - Continuous Learning (Multi-Vector Array)
 router.post('/append-vector', async (req, res) => {
   try {
     const { visitorId, unknownSnapshotId, newDescriptor, newOutfitVector } = req.body;
     const userId = getUserId(req);
+    const familyCode = getFamilyCode(req);
 
     if (!visitorId || !newDescriptor || newDescriptor.length !== 128) {
       return res.status(400).json({ error: 'visitorId and valid 128-D newDescriptor are required' });
@@ -196,14 +193,13 @@ router.post('/append-vector', async (req, res) => {
           visitor.faceDescriptors.push(newDescriptor);
           visitor.faceDescriptor = newDescriptor;
           if (newOutfitVector && newOutfitVector.length === 3) visitor.outfitVector = newOutfitVector;
+          if (userId) visitor.userId = userId;
+          if (familyCode) visitor.familyCode = familyCode;
           visitor.lastSeen = new Date();
           await visitor.save();
 
-          // Delete temporary unknown snapshot if provided
           if (unknownSnapshotId) {
-            try {
-              await Visitor.findByIdAndDelete(unknownSnapshotId);
-            } catch (e) {}
+            try { await Visitor.findByIdAndDelete(unknownSnapshotId); } catch (e) {}
           }
 
           global._memoryBridgeVisitors = global._memoryBridgeVisitors.filter(
@@ -214,7 +210,6 @@ router.post('/append-vector', async (req, res) => {
             global._memoryBridgeVisitors[idx] = visitor.toObject();
           }
           saveLocalVisitors();
-
           return res.json(visitor);
         }
       } catch (dbErr) {
@@ -250,8 +245,9 @@ router.post('/append-vector', async (req, res) => {
 // POST /api/visitors/register - Save or update registered visitor
 router.post('/register', async (req, res) => {
   try {
-    const { id, name, relationship, contextNote, faceDescriptor, outfitVector, photoThumbnail, preferredLanguage, familyCode } = req.body;
+    const { id, name, relationship, contextNote, faceDescriptor, outfitVector, photoThumbnail, preferredLanguage } = req.body;
     const userId = getUserId(req);
+    const familyCode = getFamilyCode(req);
 
     if (!name || !relationship) {
       return res.status(400).json({ error: 'Name and Relationship are required' });
@@ -294,13 +290,12 @@ router.post('/register', async (req, res) => {
             global._memoryBridgeVisitors.unshift(visitor.toObject());
           }
           saveLocalVisitors();
-
           return res.json(visitor);
         } else {
           const initialDescriptors = faceDescriptor && faceDescriptor.length === 128 ? [faceDescriptor] : [];
           const newVisitor = new Visitor({
             userId,
-            familyCode: familyCode || 'MB-1001',
+            familyCode,
             name,
             relationship,
             contextNote: contextNote || '',
@@ -332,7 +327,6 @@ router.post('/register', async (req, res) => {
 
     if (existingIndex !== -1) {
       const item = global._memoryBridgeVisitors[existingIndex];
-      if (userId) item.userId = userId;
       item.name = name;
       item.relationship = relationship;
       item.contextNote = contextNote || '';
@@ -342,35 +336,40 @@ router.post('/register', async (req, res) => {
         if (!item.faceDescriptors) item.faceDescriptors = [];
         item.faceDescriptors.push(faceDescriptor);
       }
+      if (outfitVector && outfitVector.length === 3) item.outfitVector = outfitVector;
       if (photoThumbnail) item.photoThumbnail = photoThumbnail;
       item.isRegistered = true;
-      item.updatedAt = new Date();
+      if (userId) item.userId = userId;
+      if (familyCode) item.familyCode = familyCode;
+      item.lastSeen = new Date();
       saveLocalVisitors();
       return res.json(item);
-    } else {
-      const newVisitor = {
-        _id: 'mem_' + Date.now() + '_' + Math.random().toString(36).substr(2, 4),
-        userId,
-        familyCode: familyCode || 'MB-1001',
-        name,
-        relationship,
-        contextNote: contextNote || '',
-        preferredLanguage: preferredLanguage || 'en-US',
-        faceDescriptor: faceDescriptor || [],
-        faceDescriptors: faceDescriptor && faceDescriptor.length === 128 ? [faceDescriptor] : [],
-        photoThumbnail: photoThumbnail || '',
-        isRegistered: true,
-        lastSeen: new Date(),
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      };
-      global._memoryBridgeVisitors.unshift(newVisitor);
-      saveLocalVisitors();
-      return res.status(201).json(newVisitor);
     }
+
+    const initialDescriptors = faceDescriptor && faceDescriptor.length === 128 ? [faceDescriptor] : [];
+    const newVisitor = {
+      _id: 'mem_' + Date.now() + '_' + Math.random().toString(36).substr(2, 4),
+      userId,
+      familyCode,
+      name,
+      relationship,
+      contextNote: contextNote || '',
+      preferredLanguage: preferredLanguage || 'en-US',
+      faceDescriptor: faceDescriptor || [],
+      faceDescriptors: initialDescriptors,
+      outfitVector: outfitVector || [],
+      photoThumbnail: photoThumbnail || '',
+      isRegistered: true,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      lastSeen: new Date(),
+    };
+    global._memoryBridgeVisitors.unshift(newVisitor);
+    saveLocalVisitors();
+    return res.status(201).json(newVisitor);
   } catch (error) {
     console.error('Error registering visitor:', error);
-    res.status(500).json({ error: error.message || 'Failed to register visitor' });
+    res.status(500).json({ error: 'Failed to register visitor' });
   }
 });
 
@@ -385,7 +384,7 @@ router.delete('/:id', async (req, res) => {
     }
     global._memoryBridgeVisitors = global._memoryBridgeVisitors.filter((v) => String(v._id) !== String(id));
     saveLocalVisitors();
-    res.json({ message: 'Visitor deleted successfully' });
+    return res.json({ message: 'Visitor deleted successfully' });
   } catch (error) {
     res.status(500).json({ error: 'Failed to delete visitor' });
   }

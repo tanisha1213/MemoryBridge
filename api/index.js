@@ -235,14 +235,18 @@ const handleUnknownPost = async (req, res) => {
   try {
     const { photoThumbnail, faceDescriptor, outfitVector } = req.body;
     const userId = getUserId(req);
+    const familyCode = getFamilyCode(req);
     if (!photoThumbnail) return res.status(400).json({ error: 'photoThumbnail required' });
 
+    const initialDescriptors = faceDescriptor && faceDescriptor.length === 128 ? [faceDescriptor] : [];
     const newVisitorData = {
       userId,
+      familyCode,
       name: 'Unrecognized Person',
       relationship: 'Unknown',
       contextNote: 'Captured by patient camera',
       faceDescriptor: faceDescriptor || [],
+      faceDescriptors: initialDescriptors,
       outfitVector: outfitVector || [],
       photoThumbnail,
       isRegistered: false,

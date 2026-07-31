@@ -192,9 +192,15 @@ export default function CaregiverDashboard() {
     }
   };
 
+  // Reset state when switching user/family account and re-fetch clean data
   useEffect(() => {
+    setUnknownQueue([]);
+    setRegisteredDirectory([]);
+    setNotifications([]);
+    setSelectedSnapshot(null);
+    setSelectedMergeId('');
     fetchData();
-  }, [userId]);
+  }, [userId, accessCode]);
 
   const handleSelectSnapshot = (visitor) => {
     setSelectedSnapshot(visitor);
@@ -357,6 +363,10 @@ export default function CaregiverDashboard() {
 
   const handleSignOut = () => {
     localStorage.clear();
+    setUnknownQueue([]);
+    setRegisteredDirectory([]);
+    setNotifications([]);
+    setSelectedSnapshot(null);
     navigate('/login');
   };
 

@@ -214,11 +214,28 @@ export default function PatientMirror() {
     }
   };
 
+  const userId = localStorage.getItem('mb_userId');
+  const accessCode = localStorage.getItem('mb_accessCode');
+
   useEffect(() => {
+    // Reset all local state & active tracking refs on account/family change
+    setRegisteredVisitors([]);
+    setReminders([]);
+    setRecognizedPerson(null);
+    setIsUnknownPresent(false);
+    setDetectionDistance(null);
+
+    activeRecognizedUserRef.current = null;
+    isSnapshotLockedRef.current = false;
+    unknownFrameCounterRef.current = 0;
+    noFaceFramesCountRef.current = 0;
+    spokenCountRef.current = 0;
+    lastSpokenPersonIdRef.current = null;
+
     fetchData();
     const interval = setInterval(fetchData, 4000);
     return () => clearInterval(interval);
-  }, []);
+  }, [userId, accessCode]);
 
   // Start webcam feed
   useEffect(() => {
@@ -254,7 +271,7 @@ export default function PatientMirror() {
     };
   }, []);
 
-  // Continuous face detection loop with Temporal Smoothing & Frame Verification
+  // Continuous face detection loop with Temporal Smoothing & Recognition Locks
   useEffect(() => {
     let intervalId = null;
 
@@ -295,7 +312,7 @@ export default function PatientMirror() {
           } catch (e) {}
         }
 
-        // IF NO FACE DETECTED: Reset after 3 consecutive missed frames (~1.5s)
+        // IF NO FACE DETECTED: Unlock snapshot lockout after 3 consecutive empty frames (~1.5s)
         if (!detection) {
           noFaceFramesCountRef.current += 1;
           if (noFaceFramesCountRef.current >= 3) {
@@ -311,7 +328,7 @@ export default function PatientMirror() {
           return;
         }
 
-        // Face is present -> reset no-face absence counter
+        // Face is present -> reset empty frame counter
         noFaceFramesCountRef.current = 0;
 
         const box = detection.detection.box;
@@ -321,6 +338,7 @@ export default function PatientMirror() {
         let bestMatch = null;
         let minDistance = 1.0;
 
+        // MULTI-VECTOR MATCHING ENGINE: Evaluate distance against ALL stored pose vectors per person
         registeredVisitors.forEach((visitor) => {
           if (visitor.faceDescriptors && Array.isArray(visitor.faceDescriptors) && visitor.faceDescriptors.length > 0) {
             visitor.faceDescriptors.forEach((descriptorArray) => {
@@ -344,9 +362,10 @@ export default function PatientMirror() {
         });
 
         // =========================================================
-        // 🟢 CASE A: STRICT FACE RECOGNITION MATCH (Distance < 0.48)
+        // 🟢 FIX 2.1: RECOGNIZED USER LOCK (Euclidean Distance < 0.52)
         // =========================================================
-        if (bestMatch && minDistance < 0.48) {
+        if (bestMatch && minDistance < 0.52) {
+          // Reset unknown counter and unlock snapshots for when this person leaves
           unknownFrameCounterRef.current = 0;
 
           if (activeRecognizedUserRef.current !== bestMatch._id) {
@@ -360,23 +379,36 @@ export default function PatientMirror() {
             setIsUnknownPresent(false);
             setDetectionDistance(minDistance.toFixed(2));
           }
+          // STRICTLY DISABLE and BLOCK taking any photo snapshot while this person is in frame
           return;
         }
 
         // =========================================================
-        // 🔴 CASE B: UNKNOWN FACE DETECTED (Distance >= 0.48)
+        // 🔴 FIX 2.2: TEMPORAL VERIFICATION FOR UNKNOWN FACES (Distance >= 0.52)
         // =========================================================
-        // Clear any old recognition lock immediately for unrecognised face
-        activeRecognizedUserRef.current = null;
-        setRecognizedPerson(null);
-        setIsUnknownPresent(true);
-        setDetectionDistance(null);
+        
+        // If we ALREADY recognized this person previously in session, IGNORE head turns & movement flickers!
+        if (activeRecognizedUserRef.current !== null) {
+          unknownFrameCounterRef.current += 1;
+          // Require 4 consecutive unknown frames (~4 seconds) before releasing recognition lock
+          if (unknownFrameCounterRef.current < 4) {
+            return;
+          } else {
+            activeRecognizedUserRef.current = null;
+          }
+        }
 
+        // Increment unknown frame verification counter
         unknownFrameCounterRef.current += 1;
 
-        // ONLY TAKE SNAPSHOT AFTER 3 CONSECUTIVE UNKNOWN FRAMES (~3 Seconds) AND WHEN NOT LOCKED
+        // =========================================================
+        // 📸 FIX 2.3: SNAPSHOT LOCKOUT COOLDOWN (3 Consecutive Unknown Frames)
+        // =========================================================
         if (unknownFrameCounterRef.current >= 3 && !isSnapshotLockedRef.current) {
-          isSnapshotLockedRef.current = true; // Lock further snapshots until person leaves frame!
+          isSnapshotLockedRef.current = true; // Lock taking further photos until camera frame is empty!
+          setRecognizedPerson(null);
+          setIsUnknownPresent(true);
+          setDetectionDistance(null);
           captureAndPostUnknownVisitor(Array.from(liveDescriptor), liveOutfitVector, false);
           speakUnknownAnnouncement();
         }
