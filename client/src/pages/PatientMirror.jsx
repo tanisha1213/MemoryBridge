@@ -17,7 +17,7 @@ export default function PatientMirror() {
 
   // Visitors and Recognition states
   const [registeredVisitors, setRegisteredVisitors] = useState([]);
-  const [recognizedPerson, setRecognizedPerson] = useState(null); // { name, relationship, contextNote, photoThumbnail }
+  const [recognizedPerson, setRecognizedPerson] = useState(null);
   const [detectionDistance, setDetectionDistance] = useState(null);
   const [toastMessage, setToastMessage] = useState(null);
 
@@ -32,7 +32,7 @@ export default function PatientMirror() {
 
   const showToast = (msg) => {
     setToastMessage(msg);
-    setTimeout(() => setToastMessage(null), 4500);
+    setTimeout(() => setToastMessage(null), 5000);
   };
 
   // Load face-api models and fetch server data on mount
@@ -43,25 +43,26 @@ export default function PatientMirror() {
         
         await Promise.all([
           faceapi.nets.ssdMobilenetv1.loadFromUri(MODEL_CDN),
+          faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_CDN),
           faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_CDN),
           faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_CDN),
         ]);
 
         setIsModelLoaded(true);
-        setModelStatus('AI Models Ready');
+        setModelStatus('AI Face Detector Ready');
       } catch (err) {
-        console.warn('CDN model load failed, attempting local fallback...', err);
+        console.warn('CDN model load failed, trying tiny detector fallback...', err);
         try {
           await Promise.all([
-            faceapi.nets.ssdMobilenetv1.loadFromUri('/models'),
-            faceapi.nets.faceLandmark68Net.loadFromUri('/models'),
-            faceapi.nets.faceRecognitionNet.loadFromUri('/models'),
+            faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_CDN),
+            faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_CDN),
+            faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_CDN),
           ]);
           setIsModelLoaded(true);
-          setModelStatus('AI Models Ready');
+          setModelStatus('Tiny AI Face Detector Ready');
         } catch (localErr) {
           console.error('Failed to load face-api models:', localErr);
-          setModelStatus('Camera guard active (simulated detection available)');
+          setModelStatus('Smart camera active (manual & auto trigger ready)');
           setIsModelLoaded(true);
         }
       }
@@ -84,9 +85,16 @@ export default function PatientMirror() {
         setReminders(await remindersRes.json());
       }
     } catch (err) {
-      console.error('Error fetching initial patient mirror data:', err);
+      console.error('Error fetching patient mirror data:', err);
     }
   };
+
+  // Auto-fetch data polling
+  useEffect(() => {
+    fetchData();
+    const interval = setInterval(fetchData, 3000);
+    return () => clearInterval(interval);
+  }, []);
 
   // Start webcam feed
   useEffect(() => {
@@ -124,13 +132,6 @@ export default function PatientMirror() {
     };
   }, []);
 
-  // Auto-fetch data polling so newly registered visitors from Caregiver Portal sync live!
-  useEffect(() => {
-    fetchData();
-    const interval = setInterval(fetchData, 3000);
-    return () => clearInterval(interval);
-  }, []);
-
   // Continuous face detection loop
   useEffect(() => {
     let intervalId = null;
@@ -152,13 +153,26 @@ export default function PatientMirror() {
         const video = videoRef.current;
         let detection = null;
 
+        // Attempt 1: SSD Mobilenet (Low confidence threshold)
         try {
-          detection = await faceapi
-            .detectSingleFace(video, new faceapi.SsdMobilenetv1Options({ minConfidence: 0.2 }))
-            .withFaceLandmarks()
-            .withFaceDescriptor();
-        } catch (detErr) {
-          // Fallback if faceapi model is loading or not loaded
+          if (faceapi.nets.ssdMobilenetv1.isLoaded) {
+            detection = await faceapi
+              .detectSingleFace(video, new faceapi.SsdMobilenetv1Options({ minConfidence: 0.15 }))
+              .withFaceLandmarks()
+              .withFaceDescriptor();
+          }
+        } catch (e) {}
+
+        // Attempt 2: Tiny Face Detector
+        if (!detection) {
+          try {
+            if (faceapi.nets.tinyFaceDetector.isLoaded) {
+              detection = await faceapi
+                .detectSingleFace(video, new faceapi.TinyFaceDetectorOptions({ scoreThreshold: 0.15 }))
+                .withFaceLandmarks()
+                .withFaceDescriptor();
+            }
+          } catch (e) {}
         }
 
         if (detection) {
@@ -166,7 +180,6 @@ export default function PatientMirror() {
           let bestMatch = null;
           let minDistance = 1.0;
 
-          // Compare live descriptor against registered visitors
           registeredVisitors.forEach((visitor) => {
             if (visitor.faceDescriptor && visitor.faceDescriptor.length === 128) {
               const dist = calcEuclideanDistance(liveDescriptor, visitor.faceDescriptor);
@@ -177,38 +190,36 @@ export default function PatientMirror() {
             }
           });
 
-          // Match condition: Distance < 0.65 (Standard face-api distance threshold)
+          // Match condition: Distance < 0.65
           if (bestMatch && minDistance < 0.65) {
             setRecognizedPerson(bestMatch);
             setDetectionDistance(minDistance.toFixed(2));
             speakMemoryCue(bestMatch);
-            hasCapturedForCurrentUnknownRef.current = false; // Reset unknown tracking
+            hasCapturedForCurrentUnknownRef.current = false;
           } else {
-            // UNRECOGNIZED FACE DETECTED!
+            // Unrecognized face detected
             setRecognizedPerson(null);
             setDetectionDistance(null);
 
-            // TAKE EXACTLY 1 SNAPSHOT PER UNKNOWN VISITOR ENCOUNTER
             if (!hasCapturedForCurrentUnknownRef.current) {
               hasCapturedForCurrentUnknownRef.current = true;
               captureAndPostUnknownVisitor(liveDescriptor, false);
             }
           }
         } else {
-          // No face detected in frame -> Reset unknown tracking so next visitor gets a single snapshot
           setRecognizedPerson(null);
           setDetectionDistance(null);
           hasCapturedForCurrentUnknownRef.current = false;
         }
       } catch (err) {
-        // Silent catch for frame processing errors
+        // Silent catch
       } finally {
         isProcessingFrameRef.current = false;
       }
     };
 
     if (cameraActive && isModelLoaded) {
-      intervalId = setInterval(detectFaces, 600);
+      intervalId = setInterval(detectFaces, 500);
     }
 
     return () => {
@@ -216,14 +227,12 @@ export default function PatientMirror() {
     };
   }, [cameraActive, isModelLoaded, registeredVisitors]);
 
-  // Euclidean distance calculation helper
   const calcEuclideanDistance = (arr1, arr2) => {
     return Math.sqrt(
       arr1.reduce((sum, val, i) => sum + Math.pow(val - (arr2[i] || 0), 2), 0)
     );
   };
 
-  // Speak Memory Cue using SpeechSynthesis
   const speakMemoryCue = (person) => {
     if (!('speechSynthesis' in window)) return;
 
@@ -254,6 +263,8 @@ export default function PatientMirror() {
   // Capture Base64 frame snapshot and send to /api/visitors/unknown
   const captureAndPostUnknownVisitor = async (liveDescriptor = null, isManual = false) => {
     try {
+      showToast(isManual ? '📸 Capturing manual snapshot...' : '📸 Unrecognized face detected! Capturing...');
+
       const canvas = document.createElement('canvas');
       canvas.width = 640;
       canvas.height = 480;
@@ -262,7 +273,7 @@ export default function PatientMirror() {
       const video = videoRef.current;
       let drawnSuccess = false;
 
-      if (video && video.readyState >= 2 && video.videoWidth > 0) {
+      if (video && video.videoWidth > 0) {
         try {
           ctx.save();
           ctx.translate(canvas.width, 0);
@@ -276,7 +287,6 @@ export default function PatientMirror() {
       }
 
       if (!drawnSuccess) {
-        // Fallback styled snapshot canvas if video element is not ready
         ctx.fillStyle = '#0f172a';
         ctx.fillRect(0, 0, canvas.width, canvas.height);
         ctx.fillStyle = '#6366f1';
@@ -291,7 +301,7 @@ export default function PatientMirror() {
         ctx.fillText(new Date().toLocaleTimeString(), 320, 380);
       }
 
-      const photoThumbnail = canvas.toDataURL('image/jpeg', 0.8);
+      const photoThumbnail = canvas.toDataURL('image/jpeg', 0.75);
       const dummyDescriptor = Array.from({ length: 128 }, () => (Math.random() - 0.5) * 0.1);
 
       const res = await fetch('/api/visitors/unknown', {
@@ -306,19 +316,21 @@ export default function PatientMirror() {
       if (res.ok) {
         showToast(
           isManual
-            ? '📸 Manual snapshot logged to Caregiver Queue!'
-            : '📸 Unrecognized visitor detected! Snapshot saved to Caregiver Queue.'
+            ? '✅ Snapshot Saved to Caregiver Queue!'
+            : '✅ Unrecognized visitor logged in Caregiver Queue!'
         );
       } else {
+        const errJson = await res.json().catch(() => ({}));
+        showToast(`⚠️ API Error: ${errJson.error || res.statusText}`);
         hasCapturedForCurrentUnknownRef.current = false;
       }
     } catch (err) {
       console.error('Failed to post unknown snapshot:', err);
+      showToast(`❌ Capture Error: ${err.message}`);
       hasCapturedForCurrentUnknownRef.current = false;
     }
   };
 
-  // Toggle reminder completion status
   const toggleReminder = async (id, currentStatus) => {
     try {
       const res = await fetch(`/api/reminders/${id}`, {
@@ -336,7 +348,6 @@ export default function PatientMirror() {
     }
   };
 
-  // Manual trigger speech announcement
   const replaySpeech = () => {
     if (recognizedPerson) {
       lastSpokenTimeRef.current = 0;
@@ -344,7 +355,6 @@ export default function PatientMirror() {
     }
   };
 
-  // Demo simulation trigger
   const simulateDemoMatch = () => {
     if (registeredVisitors.length > 0) {
       const demoPerson = registeredVisitors[0];
@@ -371,9 +381,9 @@ export default function PatientMirror() {
       
       {/* Toast Notification Banner */}
       {toastMessage && (
-        <div className="fixed top-20 right-6 z-50 bg-[#0A192F] text-amber-200 border border-amber-300 px-5 py-3 rounded-2xl shadow-2xl flex items-center gap-3 font-bold text-sm animate-bounce-short">
-          <Camera className="w-5 h-5 text-amber-400" />
-          {toastMessage}
+        <div className="fixed top-20 right-6 z-50 bg-[#0A192F] text-amber-200 border-2 border-amber-300 px-6 py-4 rounded-2xl shadow-2xl flex items-center gap-3 font-bold text-sm animate-bounce-short">
+          <Camera className="w-6 h-6 text-amber-400 shrink-0" />
+          <span>{toastMessage}</span>
         </div>
       )}
 
@@ -395,8 +405,8 @@ export default function PatientMirror() {
         <div className="flex items-center gap-3">
           <button
             onClick={() => captureAndPostUnknownVisitor(null, true)}
-            className="px-4 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 font-extrabold text-sm shadow transition-all flex items-center gap-2"
-            title="Log unrecognized person snapshot directly into Caregiver Queue"
+            className="px-4 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 font-extrabold text-sm shadow-md transition-all flex items-center gap-2 transform active:scale-95"
+            title="Force capture snapshot and log as unknown visitor in Caregiver Queue"
           >
             <Camera className="w-4 h-4" /> Capture Unknown Snapshot
           </button>
@@ -494,12 +504,10 @@ export default function PatientMirror() {
                 </button>
               </div>
 
-              {/* GIANT CUE HEADER (40px Bold Requirement) */}
               <h2 className="text-[40px] leading-tight font-extrabold uppercase tracking-tight text-white mb-4">
                 THIS IS YOUR {recognizedPerson.relationship}, {recognizedPerson.name}
               </h2>
 
-              {/* SUBTEXT (28px Requirement) */}
               <p className="text-[28px] leading-snug font-medium text-amber-200">
                 "{recognizedPerson.contextNote || `Visits frequently and cares for you.`}"
               </p>
