@@ -56,8 +56,9 @@ export default function PatientMirror() {
   const lastSpokenTimeRef = useRef(0);
   const lastUnknownSpokenTimeRef = useRef(0);
   const lastUnknownCaptureTimeRef = useRef(0);
-  const unknownCooldownLockRef = useRef(false); // 20-second cooldown lock per unknown session
-  const lastFaceCenterRef = useRef(null); // Face center tracking for 150px jump detection
+  const activeRecognizedUserRef = useRef(null); // Currently recognized person ID
+  const unknownFrameCounterRef = useRef(0); // How many consecutive unknown frames
+  const isSnapshotLockedRef = useRef(false); // Prevents taking duplicate photos
   const spokenCountRef = useRef(0);
   const noFaceFramesCountRef = useRef(0);
   const isProcessingFrameRef = useRef(false);
@@ -246,7 +247,7 @@ export default function PatientMirror() {
     };
   }, []);
 
-  // Continuous face detection loop with STRICT 3-Step Gatekeeper Logic
+  // Continuous face detection loop with Temporal Smoothing & Frame Verification
   useEffect(() => {
     let intervalId = null;
 
@@ -287,80 +288,88 @@ export default function PatientMirror() {
           } catch (e) {}
         }
 
-        if (detection) {
-          noFaceFramesCountRef.current = 0;
-
-          const box = detection.detection.box;
-          const currentCenterX = box.x + box.width / 2;
-          const currentCenterY = box.y + box.height / 2;
-
-          // STEP 2: Immediate Session Reset if face jumps > 150px in 1 frame
-          if (lastFaceCenterRef.current) {
-            const moveDist = Math.sqrt(
-              Math.pow(currentCenterX - lastFaceCenterRef.current.x, 2) +
-                Math.pow(currentCenterY - lastFaceCenterRef.current.y, 2)
-            );
-            if (moveDist > 150) {
-              setRecognizedPerson(null);
-              unknownCooldownLockRef.current = false;
-            }
-          }
-          lastFaceCenterRef.current = { x: currentCenterX, y: currentCenterY };
-
-          const liveDescriptor = detection.descriptor;
-          const liveOutfitVector = extractOutfitColorVector(video, box);
-
-          // STEP 1: STRICT PURE FACE DISTANCE GATEWAY
-          let minFaceDistance = 1.0;
-          let bestFaceMatch = null;
-
-          registeredVisitors.forEach((visitor) => {
-            if (visitor.faceDescriptor && visitor.faceDescriptor.length === 128) {
-              const savedDescriptor = new Float32Array(visitor.faceDescriptor);
-              const dist = faceapi.euclideanDistance(liveDescriptor, savedDescriptor);
-              if (dist < minFaceDistance) {
-                minFaceDistance = dist;
-                bestFaceMatch = visitor;
-              }
-            }
-          });
-
-          // Match threshold: Must be STRICTLY < 0.50 (HARD REJECT if >= 0.50)
-          if (bestFaceMatch && minFaceDistance < 0.50) {
-            setRecognizedPerson(bestFaceMatch);
-            setIsUnknownPresent(false);
-            setDetectionDistance(minFaceDistance.toFixed(2));
-            speakMemoryCue(bestFaceMatch);
-          } else {
-            // HARD REJECT as UNKNOWN VISITOR (Distance >= 0.50)
-            setRecognizedPerson(null);
-            setIsUnknownPresent(true);
-            setDetectionDistance(null);
-
-            // STEP 3: Snapshot Cooldown per Unknown Face (20-second lock)
-            if (!unknownCooldownLockRef.current) {
-              unknownCooldownLockRef.current = true;
-              captureAndPostUnknownVisitor(Array.from(liveDescriptor), liveOutfitVector, false);
-              speakUnknownAnnouncement();
-
-              setTimeout(() => {
-                unknownCooldownLockRef.current = false;
-              }, 20000);
-            }
-          }
-        } else {
-          noFaceFramesCountRef.current += 1;
+        // IF NO FACE IS IN FRAME: Reset everything after absence
+        if (!detection) {
+          unknownFrameCounterRef.current = 0;
+          activeRecognizedUserRef.current = null;
+          isSnapshotLockedRef.current = false;
           setRecognizedPerson(null);
           setIsUnknownPresent(false);
           setDetectionDistance(null);
+          spokenCountRef.current = 0;
+          lastSpokenPersonIdRef.current = null;
+          return;
+        }
 
-          // STEP 2: Instant Reset on 1.5 Seconds Absence (3 frames @ 500ms)
-          if (noFaceFramesCountRef.current >= 3) {
-            lastFaceCenterRef.current = null;
-            unknownCooldownLockRef.current = false; // Reset lock immediately when face leaves frame!
-            spokenCountRef.current = 0;
-            lastSpokenPersonIdRef.current = null;
+        const box = detection.detection.box;
+        const liveDescriptor = detection.descriptor;
+        const liveOutfitVector = extractOutfitColorVector(video, box);
+
+        let bestMatch = null;
+        let minDistance = 1.0;
+
+        registeredVisitors.forEach((visitor) => {
+          if (visitor.faceDescriptor && visitor.faceDescriptor.length === 128) {
+            const savedDescriptor = new Float32Array(visitor.faceDescriptor);
+            const dist = faceapi.euclideanDistance(liveDescriptor, savedDescriptor);
+            if (dist < minDistance) {
+              minDistance = dist;
+              bestMatch = visitor;
+            }
           }
+        });
+
+        // =========================================================
+        // 🟢 CASE A: FACE IS RECOGNIZED (Distance < 0.52)
+        // =========================================================
+        if (bestMatch && minDistance < 0.52) {
+          // RESET the unknown counter and snapshot lock immediately!
+          unknownFrameCounterRef.current = 0;
+          isSnapshotLockedRef.current = false;
+
+          // Lock this active person ID so movement flickering is ignored
+          if (activeRecognizedUserRef.current !== bestMatch._id) {
+            activeRecognizedUserRef.current = bestMatch._id;
+            setRecognizedPerson(bestMatch);
+            setIsUnknownPresent(false);
+            setDetectionDistance(minDistance.toFixed(2));
+            speakMemoryCue(bestMatch);
+          } else {
+            setRecognizedPerson(bestMatch);
+            setIsUnknownPresent(false);
+            setDetectionDistance(minDistance.toFixed(2));
+          }
+          return;
+        }
+
+        // =========================================================
+        // 🔴 CASE B: POTENTIAL UNKNOWN FACE (Distance >= 0.52)
+        // =========================================================
+
+        // If we ALREADY recognized this person 1-2 seconds ago, IGNORE temporary movement flickers!
+        if (activeRecognizedUserRef.current !== null) {
+          unknownFrameCounterRef.current += 1;
+
+          // Require 4 consecutive unknown frames (~4 seconds) before losing the recognition lock
+          if (unknownFrameCounterRef.current < 4) {
+            return;
+          } else {
+            // Person has truly left or a new person took their place
+            activeRecognizedUserRef.current = null;
+          }
+        }
+
+        // If truly UNKNOWN and not snapshot-locked, increment unknown frame count
+        unknownFrameCounterRef.current += 1;
+
+        // ONLY TAKE SNAPSHOT AFTER 3 CONSECUTIVE UNKNOWN FRAMES (~3 Seconds)
+        if (unknownFrameCounterRef.current >= 3 && !isSnapshotLockedRef.current) {
+          isSnapshotLockedRef.current = true; // Lock taking further photos!
+          setRecognizedPerson(null);
+          setIsUnknownPresent(true);
+          setDetectionDistance(null);
+          captureAndPostUnknownVisitor(Array.from(liveDescriptor), liveOutfitVector, false);
+          speakUnknownAnnouncement();
         }
       } catch (err) {
         // Silent catch
