@@ -47,6 +47,7 @@ export default function PatientMirror() {
   const [isUnknownPresent, setIsUnknownPresent] = useState(false);
   const [detectionDistance, setDetectionDistance] = useState(null);
   const [toastMessage, setToastMessage] = useState(null);
+  const [voicesLoaded, setVoicesLoaded] = useState(false);
 
   // Reminders
   const [reminders, setReminders] = useState([]);
@@ -445,8 +446,6 @@ export default function PatientMirror() {
       if (timerId) clearTimeout(timerId);
     };
   }, [cameraActive, isModelLoaded, registeredVisitors, currentLang, voicesLoaded]);
-
-  const [voicesLoaded, setVoicesLoaded] = useState(false);
 
   // Pre-load browser voices on mount & handle Vercel voice engine initialization
   useEffect(() => {
