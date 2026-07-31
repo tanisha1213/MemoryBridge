@@ -223,7 +223,7 @@ const handleUnknownPost = async (req, res) => {
   try {
     const { photoThumbnail, faceDescriptor, outfitVector } = req.body;
     const userId = getUserId(req);
-    const familyCode = getFamilyCode(req);
+    const familyCode = req.body?.familyCode || getFamilyCode(req);
     if (!photoThumbnail) return res.status(400).json({ error: 'photoThumbnail required' });
 
     const initialDescriptors = faceDescriptor && faceDescriptor.length === 128 ? [faceDescriptor] : [];

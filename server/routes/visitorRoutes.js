@@ -167,12 +167,12 @@ router.get('/unknown', async (req, res) => {
   }
 });
 
-// POST /api/visitors/unknown - Log unrecognized face snapshot with Account Isolation
-router.post('/unknown', async (req, res) => {
+// POST /api/visitors/unknown or POST /api/visitors/:familyCode/unknown - Log unrecognized face snapshot with Account Isolation
+router.post(['/unknown', '/:familyCode/unknown'], async (req, res) => {
   try {
     const { photoThumbnail, faceDescriptor, outfitVector } = req.body;
     const userId = getUserId(req);
-    const familyCode = getFamilyCode(req);
+    const familyCode = req.params.familyCode || req.body?.familyCode || getFamilyCode(req);
 
     if (!photoThumbnail) {
       return res.status(400).json({ error: 'photoThumbnail is required' });
@@ -199,6 +199,16 @@ router.post('/unknown', async (req, res) => {
         await newVisitor.save();
         global._memoryBridgeVisitors.unshift(newVisitor.toObject());
         saveLocalVisitors();
+
+        if (req.io) {
+          const roomKey = userId || familyCode;
+          if (roomKey) {
+            req.io.to(roomKey).emit('UNKNOWN_VISITOR_DETECTED', { ...newVisitor.toObject(), timestamp: new Date() });
+          } else {
+            req.io.emit('UNKNOWN_VISITOR_DETECTED', { ...newVisitor.toObject(), timestamp: new Date() });
+          }
+        }
+
         return res.status(201).json(newVisitor);
       } catch (dbErr) {
         console.warn('MongoDB save error on unknown visitor:', dbErr.message);
@@ -213,6 +223,16 @@ router.post('/unknown', async (req, res) => {
     };
     global._memoryBridgeVisitors.unshift(newVisitor);
     saveLocalVisitors();
+
+    if (req.io) {
+      const roomKey = userId || familyCode;
+      if (roomKey) {
+        req.io.to(roomKey).emit('UNKNOWN_VISITOR_DETECTED', { ...newVisitor, timestamp: new Date() });
+      } else {
+        req.io.emit('UNKNOWN_VISITOR_DETECTED', { ...newVisitor, timestamp: new Date() });
+      }
+    }
+
     return res.status(201).json(newVisitor);
   } catch (error) {
     console.error('Error logging unknown visitor:', error);
