@@ -1,122 +1,201 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { Link } from 'react-router-dom';
+import { io } from 'socket.io-client';
 import {
   Users,
   UserPlus,
+  ShieldCheck,
   Bell,
-  Clock,
   Trash2,
   CheckCircle2,
-  Camera,
-  ShieldCheck,
-  Plus,
-  Tag,
-  FileText,
   AlertTriangle,
-  UserCheck,
-  RefreshCw,
+  Clock,
+  ArrowRight,
   Eye,
-  Sparkles,
-  X
+  Plus,
+  RefreshCw,
+  Radio,
+  X,
+  Globe,
+  Droplets,
+  Pill,
+  Sparkles
 } from 'lucide-react';
+import { TRANSLATIONS, RELATIONSHIP_TRANSLATIONS } from '../i18n/translations';
 
 export default function CaregiverDashboard() {
-  const [activeTab, setActiveTab] = useState('queue'); // 'queue' | 'directory' | 'reminders'
-
-  // Data states
   const [unknownQueue, setUnknownQueue] = useState([]);
-  const [registeredVisitors, setRegisteredVisitors] = useState([]);
-  const [reminders, setReminders] = useState([]);
+  const [registeredDirectory, setRegisteredDirectory] = useState([]);
+  const [activeTab, setActiveTab] = useState('queue'); // 'queue' | 'directory' | 'settings'
   const [loading, setLoading] = useState(true);
-  const [actionMessage, setActionMessage] = useState(null);
+  const [notificationMsg, setNotificationMsg] = useState(null);
 
-  // Registration Modal State
-  const [selectedVisitorForRegistration, setSelectedVisitorForRegistration] = useState(null);
-  const [regForm, setRegForm] = useState({
+  // Real-time Socket & Alerts Drawer State
+  const [socketConnected, setSocketConnected] = useState(false);
+  const [notifications, setNotifications] = useState([]);
+  const [isDrawerOpen, setIsDrawerOpen] = useState(false);
+  const [unreadCount, setUnreadCount] = useState(0);
+
+  // Registration Form State
+  const [selectedSnapshot, setSelectedSnapshot] = useState(null);
+  const [formData, setFormData] = useState({
     name: '',
-    relationship: '',
+    relationship: 'Nephew',
     contextNote: '',
+    preferredLanguage: 'en-US',
   });
 
-  // Manual Add Visitor Form State
-  const [isManualAddOpen, setIsManualAddOpen] = useState(false);
-  const [manualForm, setManualForm] = useState({
-    name: '',
-    relationship: '',
-    contextNote: '',
-    photoThumbnail: '',
-  });
+  // Settings State
+  const [patientLanguage, setPatientLanguage] = useState('en-US');
+  const socketRef = useRef(null);
 
-  // Reminder Form State
-  const [newReminderTitle, setNewReminderTitle] = useState('');
-  const [newReminderTime, setNewReminderTime] = useState('02:00 PM');
+  const showNotification = (msg) => {
+    setNotificationMsg(msg);
+    setTimeout(() => setNotificationMsg(null), 5000);
+  };
 
-  // Load all dashboard data
-  const fetchAllData = async () => {
+  // Play audio chime for alerts
+  const playAlertChime = () => {
     try {
-      let unknownData = [];
-      const unknownRes = await fetch('/api/visitors?registered=false');
-      if (unknownRes.ok) {
-        unknownData = await unknownRes.json();
-      }
-      if (!unknownData || unknownData.length === 0) {
-        const altRes = await fetch('/api/visitors/unknown');
-        if (altRes.ok) {
-          unknownData = await altRes.json();
-        }
-      }
+      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(587.33, audioCtx.currentTime); // D5
+      osc.frequency.setValueAtTime(880, audioCtx.currentTime + 0.15); // A5
+      gain.gain.setValueAtTime(0.3, audioCtx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.4);
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.start();
+      osc.stop(audioCtx.currentTime + 0.4);
+    } catch (e) {}
+  };
 
-      const registeredRes = await fetch('/api/visitors?registered=true');
-      const remindersRes = await fetch('/api/reminders');
+  // Socket.io Setup
+  useEffect(() => {
+    const socketUrl = window.location.origin.includes('localhost')
+      ? 'http://localhost:5000'
+      : window.location.origin;
 
-      setUnknownQueue(unknownData || []);
-      if (registeredRes.ok) setRegisteredVisitors(await registeredRes.json());
-      if (remindersRes.ok) setReminders(await remindersRes.json());
+    const socket = io(socketUrl, {
+      transports: ['websocket', 'polling'],
+      reconnectionAttempts: 5,
+    });
+    socketRef.current = socket;
+
+    socket.on('connect', () => {
+      console.log('⚡ Caregiver Socket connected:', socket.id);
+      setSocketConnected(true);
+    });
+
+    socket.on('disconnect', () => {
+      setSocketConnected(false);
+    });
+
+    // Real-Time Socket Event Listeners
+    socket.on('UNKNOWN_VISITOR_DETECTED', (data) => {
+      console.log('🚨 Caregiver received UNKNOWN_VISITOR_DETECTED event:', data);
+      playAlertChime();
+      
+      const newAlert = {
+        id: Date.now(),
+        type: 'UNKNOWN_VISITOR',
+        title: 'Unrecognized Visitor Detected',
+        message: 'Camera captured an unrecognized face on Patient Mirror.',
+        timestamp: new Date(data.timestamp || Date.now()).toLocaleTimeString(),
+        data,
+      };
+
+      setNotifications((prev) => [newAlert, ...prev]);
+      setUnreadCount((prev) => prev + 1);
+      showNotification('📸 New Unrecognized Visitor snapshot received!');
+      fetchData();
+    });
+
+    socket.on('MISSED_MEDICATION_ALERT', (data) => {
+      playAlertChime();
+      const newAlert = {
+        id: Date.now(),
+        type: 'MEDICATION',
+        title: 'Missed Medication Alert',
+        message: data.message || 'Scheduled medication window passed without verification.',
+        timestamp: new Date().toLocaleTimeString(),
+      };
+      setNotifications((prev) => [newAlert, ...prev]);
+      setUnreadCount((prev) => prev + 1);
+    });
+
+    socket.on('HYDRATION_CHECK_ALERT', (data) => {
+      playAlertChime();
+      const newAlert = {
+        id: Date.now(),
+        type: 'HYDRATION',
+        title: 'Hydration Reminder Triggered',
+        message: data.message || 'No water intake logged for > 3 hours.',
+        timestamp: new Date().toLocaleTimeString(),
+      };
+      setNotifications((prev) => [newAlert, ...prev]);
+      setUnreadCount((prev) => prev + 1);
+    });
+
+    return () => {
+      socket.disconnect();
+    };
+  }, []);
+
+  const fetchData = async () => {
+    try {
+      setLoading(true);
+      const [unknownRes, registeredRes, settingsRes] = await Promise.all([
+        fetch('/api/visitors?registered=false'),
+        fetch('/api/visitors?registered=true'),
+        fetch('/api/settings'),
+      ]);
+
+      if (unknownRes.ok) setUnknownQueue(await unknownRes.json());
+      if (registeredRes.ok) setRegisteredDirectory(await registeredRes.json());
+      if (settingsRes.ok) {
+        const s = await settingsRes.json();
+        if (s.nativeLanguage) setPatientLanguage(s.nativeLanguage);
+      }
     } catch (err) {
-      console.error('Error loading dashboard data:', err);
+      console.error('Error fetching caregiver data:', err);
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => {
-    fetchAllData();
-    // Auto refresh queue and directory every 4 seconds
-    const interval = setInterval(fetchAllData, 4000);
-    return () => clearInterval(interval);
+    fetchData();
   }, []);
 
-  const showToast = (msg) => {
-    setActionMessage(msg);
-    setTimeout(() => setActionMessage(null), 4000);
-  };
-
-  // Open registration modal for an unrecognized snapshot
-  const openRegisterModal = (visitor) => {
-    setSelectedVisitorForRegistration(visitor);
-    setRegForm({
+  const handleSelectSnapshot = (visitor) => {
+    setSelectedSnapshot(visitor);
+    setFormData({
       name: visitor.name !== 'Unrecognized Person' ? visitor.name : '',
-      relationship: visitor.relationship !== 'Unknown' ? visitor.relationship : '',
-      contextNote: visitor.contextNote !== 'Captured by patient camera' ? visitor.contextNote : '',
+      relationship: 'Nephew',
+      contextNote: '',
+      preferredLanguage: visitor.preferredLanguage || 'en-US',
     });
   };
 
-  // Submit Registration Form
   const handleRegisterSubmit = async (e) => {
     e.preventDefault();
-    if (!selectedVisitorForRegistration || !regForm.name || !regForm.relationship) {
-      showToast('Name and Relationship are required.');
+    if (!selectedSnapshot || !formData.name || !formData.relationship) {
+      showNotification('⚠️ Please enter a Name and Relationship');
       return;
     }
 
     try {
       const payload = {
-        id: selectedVisitorForRegistration._id,
-        name: regForm.name,
-        relationship: regForm.relationship,
-        contextNote: regForm.contextNote,
-        photoThumbnail: selectedVisitorForRegistration.photoThumbnail,
-        faceDescriptor: selectedVisitorForRegistration.faceDescriptor || [],
+        id: selectedSnapshot._id,
+        name: formData.name,
+        relationship: formData.relationship,
+        contextNote: formData.contextNote,
+        preferredLanguage: formData.preferredLanguage,
+        faceDescriptor: selectedSnapshot.faceDescriptor,
+        photoThumbnail: selectedSnapshot.photoThumbnail,
       };
 
       const res = await fetch('/api/visitors/register', {
@@ -126,518 +205,470 @@ export default function CaregiverDashboard() {
       });
 
       if (res.ok) {
-        showToast(`Successfully registered ${regForm.name} as ${regForm.relationship}!`);
-        setSelectedVisitorForRegistration(null);
-        fetchAllData();
+        showNotification(`✅ Registered ${formData.name} to Memory Bank!`);
+        setSelectedSnapshot(null);
+        setFormData({ name: '', relationship: 'Nephew', contextNote: '', preferredLanguage: 'en-US' });
+        fetchData();
       } else {
-        showToast('Error registering visitor');
+        const errJson = await res.json().catch(() => ({}));
+        showNotification(`⚠️ Save Error: ${errJson.error || res.statusText}`);
       }
     } catch (err) {
-      console.error('Registration error:', err);
-      showToast('Network error during registration');
+      showNotification(`❌ Error registering visitor: ${err.message}`);
     }
   };
 
-  // Delete a visitor record
-  const handleDeleteVisitor = async (id) => {
-    if (!window.confirm('Are you sure you want to remove this visitor record?')) return;
+  const handleDeleteVisitor = async (id, name) => {
+    if (!window.confirm(`Delete ${name} from memory bank?`)) return;
     try {
       const res = await fetch(`/api/visitors/${id}`, { method: 'DELETE' });
       if (res.ok) {
-        showToast('Visitor deleted');
-        fetchAllData();
+        showNotification(`🗑️ Removed ${name}`);
+        fetchData();
       }
     } catch (err) {
-      console.error('Delete error:', err);
+      console.error('Error deleting visitor:', err);
     }
   };
 
-  // Add Reminder
-  const handleAddReminder = async (e) => {
-    e.preventDefault();
-    if (!newReminderTitle || !newReminderTime) return;
-
+  const handleUpdateLanguage = async (newLang) => {
     try {
-      const res = await fetch('/api/reminders', {
+      setPatientLanguage(newLang);
+      const res = await fetch('/api/settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title: newReminderTitle, time: newReminderTime }),
+        body: JSON.stringify({ nativeLanguage: newLang }),
       });
-
       if (res.ok) {
-        showToast('New reminder created for patient mirror view');
-        setNewReminderTitle('');
-        fetchAllData();
+        showNotification(`🌐 Updated Patient Language to ${TRANSLATIONS[newLang]?.label}`);
+        if (socketRef.current) {
+          socketRef.current.emit('PATIENT_SETTINGS_UPDATED', { nativeLanguage: newLang });
+        }
       }
-    } catch (err) {
-      console.error('Add reminder error:', err);
+    } catch (err) {}
+  };
+
+  const triggerTestMedicationAlert = () => {
+    if (socketRef.current) {
+      socketRef.current.emit('MISSED_MEDICATION_EVENT', {
+        message: 'Afternoon pill window (3:30 PM) passed without verification.',
+      });
     }
   };
 
-  // Delete Reminder
-  const handleDeleteReminder = async (id) => {
-    try {
-      const res = await fetch(`/api/reminders/${id}`, { method: 'DELETE' });
-      if (res.ok) {
-        showToast('Reminder removed');
-        fetchAllData();
-      }
-    } catch (err) {
-      console.error('Delete reminder error:', err);
+  const triggerTestHydrationAlert = () => {
+    if (socketRef.current) {
+      socketRef.current.emit('HYDRATION_CHECK_EVENT', {
+        message: 'No hydration event detected for 3 hours.',
+      });
     }
   };
 
   return (
-    <div className="min-h-screen bg-slate-900 text-slate-100 font-sans">
+    <div className="min-h-screen bg-[#0F172A] text-slate-100 font-sans flex flex-col relative overflow-x-hidden">
       
       {/* Toast Notification Banner */}
-      {actionMessage && (
-        <div className="fixed top-6 right-6 z-50 bg-emerald-600 text-white px-5 py-3 rounded-xl shadow-2xl flex items-center gap-3 animate-fade-in font-medium">
-          <CheckCircle2 className="w-5 h-5 text-emerald-200" />
-          {actionMessage}
+      {notificationMsg && (
+        <div className="fixed top-6 right-6 z-50 bg-[#1E293B] text-emerald-300 border border-emerald-500/50 px-6 py-4 rounded-2xl shadow-2xl flex items-center gap-3 font-semibold text-sm animate-bounce-short">
+          <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
+          <span>{notificationMsg}</span>
         </div>
       )}
 
-      {/* Modern Top Navigation Bar */}
-      <header className="sticky top-0 z-40 bg-slate-900/90 backdrop-blur-md border-b border-slate-800 px-6 py-4">
-        <div className="max-w-7xl mx-auto flex flex-col md:flex-row md:items-center justify-between gap-4">
-          
-          {/* Brand Logo */}
-          <div className="flex items-center gap-4">
-            <Link to="/" className="flex items-center gap-3 group">
-              <div className="w-10 h-10 rounded-xl bg-indigo-600 flex items-center justify-center text-white shadow-lg shadow-indigo-600/30 group-hover:scale-105 transition-transform">
-                <ShieldCheck className="w-6 h-6" />
-              </div>
-              <div>
-                <h1 className="text-xl font-extrabold tracking-tight text-white">MemoryBridge</h1>
-                <p className="text-xs text-indigo-400 font-semibold">Caregiver Command Center</p>
-              </div>
-            </Link>
+      {/* FLOATING CAREGIVER NOTIFICATION DRAWER REQUIREMENT */}
+      {isDrawerOpen && (
+        <div className="fixed inset-0 z-50 flex justify-end bg-black/60 backdrop-blur-sm animate-fade-in">
+          <div className="w-full max-w-md bg-[#1E293B] border-l border-slate-700 h-full p-6 flex flex-col shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-700 pb-4 mb-4">
+              <h3 className="text-xl font-bold text-white flex items-center gap-2">
+                <Bell className="w-6 h-6 text-emerald-400" /> Caregiver Notifications
+              </h3>
+              <button
+                onClick={() => {
+                  setIsDrawerOpen(false);
+                  setUnreadCount(0);
+                }}
+                className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
 
-            {/* Quick Status Pill Requirement */}
-            <div className="hidden sm:inline-flex items-center gap-2 px-3 py-1 rounded-full bg-slate-800 border border-slate-700 text-xs font-semibold text-emerald-400">
-              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping" />
-              🟢 Patient Camera Active
+            <div className="flex-1 overflow-y-auto space-y-3 pr-1">
+              {notifications.length === 0 ? (
+                <div className="text-center text-slate-500 py-12">
+                  <Bell className="w-12 h-12 mx-auto mb-3 opacity-30" />
+                  <p>No new notifications yet.</p>
+                </div>
+              ) : (
+                notifications.map((n) => (
+                  <div
+                    key={n.id}
+                    className={`p-4 rounded-2xl border transition-all ${
+                      n.type === 'UNKNOWN_VISITOR'
+                        ? 'bg-rose-950/40 border-rose-500/50 text-rose-200'
+                        : n.type === 'MEDICATION'
+                        ? 'bg-amber-950/40 border-amber-500/50 text-amber-200'
+                        : 'bg-indigo-950/40 border-indigo-500/50 text-indigo-200'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between">
+                      <p className="font-bold text-sm">{n.title}</p>
+                      <span className="text-[10px] font-mono opacity-70">{n.timestamp}</span>
+                    </div>
+                    <p className="text-xs mt-1 text-slate-300">{n.message}</p>
+                    {n.data && n.data.photoThumbnail && (
+                      <img
+                        src={n.data.photoThumbnail}
+                        alt="Alert Snapshot"
+                        className="mt-3 w-24 h-24 object-cover rounded-xl border border-slate-700"
+                      />
+                    )}
+                  </div>
+                ))
+              )}
             </div>
           </div>
+        </div>
+      )}
 
-          {/* Navigation Tabs Requirement */}
-          <div className="flex items-center gap-2 bg-slate-800/80 p-1.5 rounded-2xl border border-slate-700/70 overflow-x-auto">
-            <button
-              onClick={() => setActiveTab('queue')}
-              className={`px-4 py-2 rounded-xl text-sm font-bold transition-all flex items-center gap-2 whitespace-nowrap ${
-                activeTab === 'queue'
-                  ? 'bg-indigo-600 text-white shadow-md'
-                  : 'text-slate-400 hover:text-white hover:bg-slate-700/50'
-              }`}
-            >
-              <Users className="w-4 h-4" />
-              Visitor Queue
-              {unknownQueue.length > 0 && (
-                <span className="ml-1 px-2 py-0.5 text-xs rounded-full bg-amber-500 text-slate-900 font-extrabold">
-                  {unknownQueue.length}
-                </span>
-              )}
-            </button>
-
-            <button
-              onClick={() => setActiveTab('directory')}
-              className={`px-4 py-2 rounded-xl text-sm font-bold transition-all flex items-center gap-2 whitespace-nowrap ${
-                activeTab === 'directory'
-                  ? 'bg-indigo-600 text-white shadow-md'
-                  : 'text-slate-400 hover:text-white hover:bg-slate-700/50'
-              }`}
-            >
-              <UserCheck className="w-4 h-4" />
-              Registered Directory ({registeredVisitors.length})
-            </button>
-
-            <button
-              onClick={() => setActiveTab('reminders')}
-              className={`px-4 py-2 rounded-xl text-sm font-bold transition-all flex items-center gap-2 whitespace-nowrap ${
-                activeTab === 'reminders'
-                  ? 'bg-indigo-600 text-white shadow-md'
-                  : 'text-slate-400 hover:text-white hover:bg-slate-700/50'
-              }`}
-            >
-              <Bell className="w-4 h-4" />
-              Daily Reminders ({reminders.length})
-            </button>
-          </div>
-
-          {/* Patient View Switcher */}
+      {/* TOP REAL-TIME HEADER */}
+      <header className="w-full bg-[#1E293B]/80 backdrop-blur border-b border-slate-800 px-6 py-4 flex items-center justify-between sticky top-0 z-30 shadow-md">
+        <div className="flex items-center gap-4">
           <Link
             to="/patient"
-            className="hidden lg:inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-emerald-600/20 border border-emerald-500/30 text-emerald-300 hover:bg-emerald-600 hover:text-white text-xs font-bold transition-all"
+            className="p-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 transition-colors flex items-center gap-2 text-sm font-bold"
           >
-            <Camera className="w-4 h-4" /> Switch to Patient Mirror
+            <Eye className="w-4 h-4 text-emerald-400" /> Patient View
           </Link>
+          <div className="flex items-center gap-3">
+            <h1 className="text-xl font-extrabold text-white tracking-tight hidden sm:block">Caregiver Portal</h1>
+            {/* LIVE WEBSOCKET STATUS BADGE REQUIREMENT */}
+            <span
+              className={`px-3 py-1 rounded-full text-xs font-bold flex items-center gap-1.5 ${
+                socketConnected
+                  ? 'bg-emerald-950/80 border border-emerald-500/50 text-emerald-400'
+                  : 'bg-rose-950/80 border border-rose-500/50 text-rose-400'
+              }`}
+            >
+              <span className={`w-2 h-2 rounded-full ${socketConnected ? 'bg-emerald-400 animate-ping' : 'bg-rose-500'}`} />
+              {socketConnected ? '🟢 System Online' : '🔴 Socket Disconnected'}
+            </span>
+          </div>
+        </div>
 
+        {/* Header Right Actions */}
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => {
+              setIsDrawerOpen(true);
+              setUnreadCount(0);
+            }}
+            className="relative p-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 transition-all"
+            title="Open Notification Drawer"
+          >
+            <Bell className="w-5 h-5 text-emerald-400" />
+            {unreadCount > 0 && (
+              <span className="absolute -top-1 -right-1 bg-rose-500 text-white text-[10px] font-extrabold px-1.5 py-0.5 rounded-full animate-pulse">
+                {unreadCount}
+              </span>
+            )}
+          </button>
+          <button
+            onClick={fetchData}
+            className="p-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 transition-colors"
+          >
+            <RefreshCw className={`w-5 h-5 ${loading ? 'animate-spin' : ''}`} />
+          </button>
         </div>
       </header>
 
-      {/* Main Container Spacing Requirement (max-w-7xl mx-auto p-8) */}
-      <main className="max-w-7xl mx-auto p-8 space-y-8">
-
-        {/* Dashboard Welcome Header */}
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-slate-800/50 border border-slate-800 p-6 rounded-3xl">
-          <div>
-            <h2 className="text-2xl font-bold text-white tracking-tight">Caregiver Management</h2>
-            <p className="text-sm text-slate-400 mt-1">
-              Identify unrecognized face captures, maintain the family memory directory, and coordinate daily reminders.
-            </p>
+      {/* MAIN CONTAINER */}
+      <main className="flex-1 max-w-7xl w-full mx-auto p-4 md:p-8 space-y-8">
+        
+        {/* TOP METRICS & QUICK ACTIONS */}
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          <div className="bg-[#1E293B] border border-slate-800 p-5 rounded-2xl flex items-center justify-between">
+            <div>
+              <p className="text-xs uppercase font-bold text-slate-400">Unrecognized Queue</p>
+              <p className="text-3xl font-extrabold text-rose-400 mt-1">{unknownQueue.length}</p>
+            </div>
+            <div className="p-3 bg-rose-500/10 rounded-xl text-rose-400">
+              <AlertTriangle className="w-6 h-6" />
+            </div>
           </div>
+
+          <div className="bg-[#1E293B] border border-slate-800 p-5 rounded-2xl flex items-center justify-between">
+            <div>
+              <p className="text-xs uppercase font-bold text-slate-400">Memory Directory</p>
+              <p className="text-3xl font-extrabold text-emerald-400 mt-1">{registeredDirectory.length}</p>
+            </div>
+            <div className="p-3 bg-emerald-500/10 rounded-xl text-emerald-400">
+              <Users className="w-6 h-6" />
+            </div>
+          </div>
+
+          {/* PATIENT NATIVE LANGUAGE SELECTOR REQUIREMENT */}
+          <div className="bg-[#1E293B] border border-slate-800 p-5 rounded-2xl flex flex-col justify-between">
+            <p className="text-xs uppercase font-bold text-slate-400 flex items-center gap-1.5">
+              <Globe className="w-4 h-4 text-indigo-400" /> Patient Native Voice
+            </p>
+            <div className="flex gap-1.5 mt-2">
+              {Object.keys(TRANSLATIONS).map((langKey) => (
+                <button
+                  key={langKey}
+                  onClick={() => handleUpdateLanguage(langKey)}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all ${
+                    patientLanguage === langKey
+                      ? 'bg-indigo-600 text-white'
+                      : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+                  }`}
+                >
+                  {TRANSLATIONS[langKey].flag} {langKey.split('-')[0].toUpperCase()}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* SIMULATION TEST BUTTONS */}
+          <div className="bg-[#1E293B] border border-slate-800 p-4 rounded-2xl flex flex-col justify-between space-y-2">
+            <p className="text-xs uppercase font-bold text-slate-400">Test Alert Triggers</p>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={triggerTestMedicationAlert}
+                className="flex-1 py-1.5 px-2 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 rounded-xl text-xs font-bold flex items-center justify-center gap-1"
+              >
+                <Pill className="w-3.5 h-3.5" /> Pill Alert
+              </button>
+              <button
+                onClick={triggerTestHydrationAlert}
+                className="flex-1 py-1.5 px-2 bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-300 border border-indigo-500/40 rounded-xl text-xs font-bold flex items-center justify-center gap-1"
+              >
+                <Droplets className="w-3.5 h-3.5" /> Water Alert
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* TAB SWITCHER */}
+        <div className="flex border-b border-slate-800 space-x-6">
           <button
-            onClick={fetchAllData}
-            className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-sm font-semibold flex items-center gap-2 transition-colors self-start md:self-auto"
+            onClick={() => setActiveTab('queue')}
+            className={`pb-3 text-sm font-extrabold flex items-center gap-2 transition-all border-b-2 ${
+              activeTab === 'queue'
+                ? 'border-emerald-400 text-emerald-400'
+                : 'border-transparent text-slate-400 hover:text-slate-200'
+            }`}
           >
-            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} /> Refresh Data
+            <AlertTriangle className="w-4 h-4" /> Unrecognized Queue ({unknownQueue.length})
+          </button>
+          <button
+            onClick={() => setActiveTab('directory')}
+            className={`pb-3 text-sm font-extrabold flex items-center gap-2 transition-all border-b-2 ${
+              activeTab === 'directory'
+                ? 'border-emerald-400 text-emerald-400'
+                : 'border-transparent text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <ShieldCheck className="w-4 h-4" /> Registered Memory Bank ({registeredDirectory.length})
           </button>
         </div>
 
-        {/* TAB 1: UNRECOGNIZED VISITOR QUEUE */}
+        {/* SECTION 1: UNRECOGNIZED VISITORS QUEUE & TAGGING FORM */}
         {activeTab === 'queue' && (
-          <div className="space-y-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <h3 className="text-lg font-bold text-white flex items-center gap-2">
-                  <AlertTriangle className="w-5 h-5 text-amber-400" /> Unrecognized Visitor Queue
-                </h3>
-                <p className="text-sm text-slate-400">
-                  Photos captured automatically by the patient's mirror camera when an unknown face is detected.
-                </p>
-              </div>
-            </div>
-
-            {unknownQueue.length === 0 ? (
-              <div className="bg-slate-800/60 border border-slate-800 rounded-3xl p-12 text-center space-y-4">
-                <div className="w-16 h-16 rounded-full bg-emerald-500/10 text-emerald-400 flex items-center justify-center mx-auto">
-                  <CheckCircle2 className="w-8 h-8" />
-                </div>
-                <h4 className="text-xl font-bold text-white">No Unrecognized Visitors in Queue</h4>
-                <p className="text-sm text-slate-400 max-w-md mx-auto">
-                  When someone unrecognized steps in front of the patient mirror, their snapshot will appear here for identification and memory note tagging.
-                </p>
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                {unknownQueue.map((visitor) => (
-                  <div
-                    key={visitor._id}
-                    className="bg-slate-800 border border-slate-700/80 rounded-3xl overflow-hidden shadow-xl flex flex-col justify-between group hover:border-indigo-500/50 transition-all"
-                  >
-                    <div className="relative aspect-video bg-slate-900 overflow-hidden">
-                      <img
-                        src={visitor.photoThumbnail}
-                        alt="Unrecognized Visitor"
-                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                      />
-                      <div className="absolute top-3 right-3 px-3 py-1 rounded-full bg-amber-500 text-slate-950 text-xs font-extrabold shadow">
-                        Needs Identification
-                      </div>
-                      <div className="absolute bottom-3 left-3 px-3 py-1 rounded-full bg-slate-900/80 backdrop-blur text-slate-300 text-xs flex items-center gap-1.5">
-                        <Clock className="w-3.5 h-3.5" />
-                        {new Date(visitor.lastSeen || visitor.createdAt).toLocaleTimeString([], {
-                          hour: '2-digit',
-                          minute: '2-digit',
-                        })}
-                      </div>
-                    </div>
-
-                    <div className="p-6 space-y-4 flex-1 flex flex-col justify-between">
-                      <div>
-                        <h4 className="text-lg font-bold text-white mb-1">Unknown Visitor</h4>
-                        <p className="text-xs text-slate-400">Captured by Patient Mirror AI</p>
-                      </div>
-
-                      <div className="pt-2 flex items-center gap-3">
-                        <button
-                          onClick={() => openRegisterModal(visitor)}
-                          className="flex-1 py-3 px-4 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-sm shadow-lg shadow-indigo-600/30 flex items-center justify-center gap-2 transition-all"
-                        >
-                          <Tag className="w-4 h-4" /> Tag & Save Visitor
-                        </button>
-                        <button
-                          onClick={() => handleDeleteVisitor(visitor._id)}
-                          className="p-3 rounded-xl bg-slate-700/60 hover:bg-rose-950 hover:text-rose-400 text-slate-400 transition-colors"
-                          title="Discard snapshot"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* TAB 2: REGISTERED DIRECTORY */}
-        {activeTab === 'directory' && (
-          <div className="space-y-6">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-              <div>
-                <h3 className="text-lg font-bold text-white flex items-center gap-2">
-                  <UserCheck className="w-5 h-5 text-emerald-400" /> Registered Memory Directory
-                </h3>
-                <p className="text-sm text-slate-400">
-                  Friends, family, and caregivers registered with 128-dimensional facial descriptors and memory context notes.
-                </p>
-              </div>
-            </div>
-
-            {registeredVisitors.length === 0 ? (
-              <div className="bg-slate-800/60 border border-slate-800 rounded-3xl p-12 text-center space-y-4">
-                <Users className="w-12 h-12 text-slate-600 mx-auto" />
-                <h4 className="text-xl font-bold text-white">No Registered Visitors Yet</h4>
-                <p className="text-sm text-slate-400">
-                  Tag visitors from the Visitor Queue to start building the patient's recognition directory.
-                </p>
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                {registeredVisitors.map((visitor) => (
-                  <div
-                    key={visitor._id}
-                    className="bg-slate-800 border border-slate-700/80 rounded-3xl overflow-hidden shadow-xl flex flex-col justify-between hover:border-emerald-500/50 transition-all"
-                  >
-                    <div className="relative aspect-video bg-slate-900 overflow-hidden">
-                      {visitor.photoThumbnail ? (
-                        <img
-                          src={visitor.photoThumbnail}
-                          alt={visitor.name}
-                          className="w-full h-full object-cover"
-                        />
-                      ) : (
-                        <div className="w-full h-full flex items-center justify-center bg-indigo-950 text-indigo-400 font-bold text-2xl">
-                          {visitor.name.charAt(0)}
-                        </div>
-                      )}
-                      <div className="absolute top-3 right-3 px-3 py-1 rounded-full bg-emerald-500 text-slate-950 text-xs font-extrabold shadow">
-                        {visitor.relationship}
-                      </div>
-                    </div>
-
-                    <div className="p-6 space-y-4 flex-1 flex flex-col justify-between">
-                      <div className="space-y-2">
-                        <h4 className="text-xl font-extrabold text-white">{visitor.name}</h4>
-                        <div className="bg-slate-900/60 p-3 rounded-2xl border border-slate-700/60">
-                          <p className="text-xs font-semibold text-indigo-400 uppercase tracking-wider mb-1">Memory Cue Note</p>
-                          <p className="text-sm text-slate-200 leading-relaxed italic">
-                            "{visitor.contextNote || 'No specific memory note added.'}"
-                          </p>
-                        </div>
-                      </div>
-
-                      <div className="pt-2 flex items-center justify-between text-xs text-slate-400 border-t border-slate-700/60">
-                        <span className="flex items-center gap-1 text-emerald-400 font-medium">
-                          <Sparkles className="w-3.5 h-3.5" /> 128-D Face Encoded
-                        </span>
-                        <button
-                          onClick={() => handleDeleteVisitor(visitor._id)}
-                          className="p-2 text-slate-400 hover:text-rose-400 transition-colors"
-                          title="Remove from directory"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* TAB 3: DAILY REMINDERS */}
-        {activeTab === 'reminders' && (
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
             
-            {/* Create Reminder Form */}
-            <div className="lg:col-span-5 bg-slate-800 border border-slate-700/80 p-6 rounded-3xl space-y-6 shadow-xl">
-              <div>
-                <h3 className="text-lg font-bold text-white flex items-center gap-2">
-                  <Plus className="w-5 h-5 text-indigo-400" /> Create Patient Reminder
-                </h3>
-                <p className="text-sm text-slate-400 mt-1">
-                  Add schedule prompts that render on the patient's mirror screen.
-                </p>
-              </div>
+            {/* Left Queue List */}
+            <div className="lg:col-span-7 space-y-4">
+              <h2 className="text-lg font-bold text-white flex items-center gap-2">
+                <Clock className="w-5 h-5 text-rose-400" /> Recent Unknown Snapshots
+              </h2>
 
-              <form onSubmit={handleAddReminder} className="space-y-4">
-                <div>
-                  <label className="block text-sm font-bold text-slate-300 mb-2">Reminder Title</label>
-                  <input
-                    type="text"
-                    placeholder="e.g. Drink Water or Take Afternoon Medicine"
-                    value={newReminderTitle}
-                    onChange={(e) => setNewReminderTitle(e.target.value)}
-                    required
-                    className="w-full px-4 py-3 rounded-xl bg-slate-900 border border-slate-700 text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 text-sm font-medium"
-                  />
+              {unknownQueue.length === 0 ? (
+                <div className="bg-[#1E293B] border border-slate-800 p-8 rounded-2xl text-center space-y-2">
+                  <CheckCircle2 className="w-12 h-12 text-emerald-400 mx-auto opacity-80" />
+                  <p className="text-base font-bold text-white">Queue Empty</p>
+                  <p className="text-xs text-slate-400">All visitors have been recognized or tagged.</p>
                 </div>
-
-                <div>
-                  <label className="block text-sm font-bold text-slate-300 mb-2">Scheduled Time</label>
-                  <input
-                    type="text"
-                    placeholder="e.g. 2:00 PM"
-                    value={newReminderTime}
-                    onChange={(e) => setNewReminderTime(e.target.value)}
-                    required
-                    className="w-full px-4 py-3 rounded-xl bg-slate-900 border border-slate-700 text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 text-sm font-medium"
-                  />
-                </div>
-
-                <button
-                  type="submit"
-                  className="w-full py-3.5 px-4 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-sm shadow-lg shadow-indigo-600/30 flex items-center justify-center gap-2 transition-all"
-                >
-                  <Bell className="w-4 h-4" /> Add Daily Reminder
-                </button>
-              </form>
-            </div>
-
-            {/* Active Reminders List */}
-            <div className="lg:col-span-7 bg-slate-800 border border-slate-700/80 p-6 rounded-3xl space-y-6 shadow-xl">
-              <div>
-                <h3 className="text-lg font-bold text-white flex items-center gap-2">
-                  <Bell className="w-5 h-5 text-emerald-400" /> Active Patient Reminders ({reminders.length})
-                </h3>
-                <p className="text-sm text-slate-400 mt-1">
-                  Live checklist shown on the Patient Mirror screen.
-                </p>
-              </div>
-
-              {reminders.length === 0 ? (
-                <p className="text-sm text-slate-500 py-8 text-center">No active reminders created yet.</p>
               ) : (
-                <div className="space-y-3">
-                  {reminders.map((reminder) => (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  {unknownQueue.map((visitor) => (
                     <div
-                      key={reminder._id}
-                      className="p-4 rounded-2xl bg-slate-900 border border-slate-700/80 flex items-center justify-between"
+                      key={visitor._id}
+                      onClick={() => handleSelectSnapshot(visitor)}
+                      className={`bg-[#1E293B] border-2 p-4 rounded-2xl cursor-pointer transition-all ${
+                        selectedSnapshot?._id === visitor._id
+                          ? 'border-emerald-400 bg-slate-800 shadow-xl'
+                          : 'border-slate-800 hover:border-slate-700'
+                      }`}
                     >
-                      <div className="flex items-center gap-3">
-                        <div
-                          className={`w-3 h-3 rounded-full ${
-                            reminder.isCompleted ? 'bg-emerald-500' : 'bg-amber-400 animate-pulse'
-                          }`}
+                      <div className="aspect-[4/3] rounded-xl overflow-hidden bg-slate-950 mb-3 border border-slate-800 relative">
+                        <img
+                          src={visitor.photoThumbnail}
+                          alt="Snapshot"
+                          className="w-full h-full object-cover"
                         />
-                        <div>
-                          <p className={`font-bold text-base ${reminder.isCompleted ? 'text-slate-400 line-through' : 'text-white'}`}>
-                            {reminder.title}
-                          </p>
-                          <p className="text-xs text-slate-400">{reminder.time}</p>
-                        </div>
+                        <span className="absolute top-2 right-2 bg-slate-900/80 px-2 py-1 rounded-md text-[10px] font-mono text-slate-300">
+                          {new Date(visitor.lastSeen || visitor.createdAt).toLocaleTimeString()}
+                        </span>
                       </div>
-
-                      <button
-                        onClick={() => handleDeleteReminder(reminder._id)}
-                        className="p-2 text-slate-400 hover:text-rose-400 transition-colors"
-                        title="Delete reminder"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <p className="text-sm font-bold text-white">Unrecognized Visitor</p>
+                          <p className="text-xs text-slate-400">Captured by Camera</p>
+                        </div>
+                        <button className="px-3 py-1.5 bg-emerald-500/20 text-emerald-300 text-xs font-bold rounded-xl border border-emerald-500/30 hover:bg-emerald-500/30">
+                          Tag Person
+                        </button>
+                      </div>
                     </div>
                   ))}
                 </div>
               )}
             </div>
 
+            {/* Right Tagging Form */}
+            <div className="lg:col-span-5">
+              <div className="bg-[#1E293B] border border-slate-800 p-6 rounded-3xl sticky top-24 space-y-5">
+                <h3 className="text-lg font-bold text-white flex items-center gap-2 border-b border-slate-800 pb-3">
+                  <UserPlus className="w-5 h-5 text-emerald-400" /> Identify & Register Profile
+                </h3>
+
+                {selectedSnapshot ? (
+                  <form onSubmit={handleRegisterSubmit} className="space-y-4">
+                    <div className="flex items-center gap-4 bg-slate-900 p-3 rounded-2xl border border-slate-800">
+                      <img
+                        src={selectedSnapshot.photoThumbnail}
+                        alt="Thumbnail"
+                        className="w-16 h-16 object-cover rounded-xl border border-slate-700"
+                      />
+                      <div>
+                        <p className="text-xs uppercase font-bold text-slate-400">Snapshot Selected</p>
+                        <p className="text-xs font-mono text-slate-300">
+                          {new Date(selectedSnapshot.lastSeen || selectedSnapshot.createdAt).toLocaleString()}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold uppercase text-slate-400 mb-1">Full Name</label>
+                      <input
+                        type="text"
+                        required
+                        placeholder="e.g. Rahul Sharma"
+                        value={formData.name}
+                        onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                        className="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-emerald-400"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold uppercase text-slate-400 mb-1">Relationship</label>
+                      <select
+                        value={formData.relationship}
+                        onChange={(e) => setFormData({ ...formData, relationship: e.target.value })}
+                        className="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-emerald-400"
+                      >
+                        {Object.keys(RELATIONSHIP_TRANSLATIONS).map((rel) => (
+                          <option key={rel} value={rel}>{rel}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold uppercase text-slate-400 mb-1">Context Note</label>
+                      <textarea
+                        rows={3}
+                        placeholder="e.g. He lives in Pune and visits on Tuesdays."
+                        value={formData.contextNote}
+                        onChange={(e) => setFormData({ ...formData, contextNote: e.target.value })}
+                        className="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-emerald-400"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold uppercase text-slate-400 mb-1">Preferred Language</label>
+                      <select
+                        value={formData.preferredLanguage}
+                        onChange={(e) => setFormData({ ...formData, preferredLanguage: e.target.value })}
+                        className="w-full bg-slate-900 border border-slate-700 text-white rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-emerald-400"
+                      >
+                        {Object.keys(TRANSLATIONS).map((langKey) => (
+                          <option key={langKey} value={langKey}>
+                            {TRANSLATIONS[langKey].flag} {TRANSLATIONS[langKey].label} ({langKey})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <button
+                      type="submit"
+                      className="w-full py-3 bg-emerald-500 hover:bg-emerald-600 text-slate-950 font-extrabold rounded-xl shadow-lg transition-all"
+                    >
+                      Save to Memory Bank
+                    </button>
+                  </form>
+                ) : (
+                  <div className="py-12 text-center text-slate-500">
+                    <UserPlus className="w-12 h-12 mx-auto mb-2 opacity-30" />
+                    <p className="text-sm font-semibold">Select a snapshot on the left to tag and save.</p>
+                  </div>
+                )}
+              </div>
+            </div>
+
+          </div>
+        )}
+
+        {/* SECTION 2: REGISTERED MEMORY BANK DIRECTORY */}
+        {activeTab === 'directory' && (
+          <div className="space-y-4">
+            <h2 className="text-lg font-bold text-white flex items-center gap-2">
+              <ShieldCheck className="w-5 h-5 text-emerald-400" /> Registered Known Visitors
+            </h2>
+
+            {registeredDirectory.length === 0 ? (
+              <div className="bg-[#1E293B] border border-slate-800 p-12 rounded-3xl text-center space-y-2">
+                <Users className="w-12 h-12 text-slate-600 mx-auto" />
+                <p className="text-[#FFFDD0] font-bold text-lg">No Registered Visitors</p>
+                <p className="text-xs text-slate-400">Tag snapshots from the Unrecognized Queue to build your memory bank.</p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+                {registeredDirectory.map((visitor) => (
+                  <div key={visitor._id} className="bg-[#1E293B] border border-slate-800 p-5 rounded-3xl space-y-4 hover:border-slate-700 transition-all shadow-lg">
+                    <div className="aspect-video bg-slate-950 rounded-2xl overflow-hidden border border-slate-800">
+                      <img
+                        src={visitor.photoThumbnail}
+                        alt={visitor.name}
+                        className="w-full h-full object-cover"
+                      />
+                    </div>
+                    <div className="flex items-start justify-between">
+                      <div>
+                        <h3 className="text-xl font-extrabold text-white">{visitor.name}</h3>
+                        <span className="inline-block mt-1 px-3 py-1 bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 rounded-full text-xs font-bold">
+                          {visitor.relationship}
+                        </span>
+                      </div>
+                      <button
+                        onClick={() => handleDeleteVisitor(visitor._id, visitor.name)}
+                        className="p-2 rounded-xl bg-slate-800 hover:bg-rose-500/20 text-slate-400 hover:text-rose-400 transition-colors"
+                        title="Delete from memory bank"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+
+                    <p className="text-sm text-slate-300 font-medium">"{visitor.contextNote || 'No context note added.'}"</p>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
 
       </main>
-
-      {/* REGISTRATION MODAL FOR UNRECOGNIZED VISITOR */}
-      {selectedVisitorForRegistration && (
-        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-slate-800 border border-slate-700 rounded-3xl max-w-lg w-full p-6 space-y-6 shadow-2xl animate-fade-in relative">
-            <button
-              onClick={() => setSelectedVisitorForRegistration(null)}
-              className="absolute top-5 right-5 p-2 rounded-xl text-slate-400 hover:text-white hover:bg-slate-700 transition-colors"
-            >
-              <X className="w-5 h-5" />
-            </button>
-
-            <div className="flex items-center gap-4 border-b border-slate-700 pb-4">
-              <div className="w-16 h-16 rounded-2xl overflow-hidden bg-slate-900 border border-slate-700 shrink-0">
-                <img
-                  src={selectedVisitorForRegistration.photoThumbnail}
-                  alt="Snapshot"
-                  className="w-full h-full object-cover"
-                />
-              </div>
-              <div>
-                <h3 className="text-xl font-bold text-white">Identify & Register Visitor</h3>
-                <p className="text-xs text-indigo-400 font-semibold">128-D Face Features Captured</p>
-              </div>
-            </div>
-
-            <form onSubmit={handleRegisterSubmit} className="space-y-4">
-              <div>
-                <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-2">
-                  Full Name <span className="text-rose-400">*</span>
-                </label>
-                <input
-                  type="text"
-                  placeholder="e.g. Rahul Sharma"
-                  value={regForm.name}
-                  onChange={(e) => setRegForm({ ...regForm, name: e.target.value })}
-                  required
-                  className="w-full px-4 py-3 rounded-xl bg-slate-900 border border-slate-700 text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 text-sm font-medium"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-2">
-                  Relationship <span className="text-rose-400">*</span>
-                </label>
-                <input
-                  type="text"
-                  placeholder="e.g. Nephew, Daughter, Doctor, Primary Caregiver"
-                  value={regForm.relationship}
-                  onChange={(e) => setRegForm({ ...regForm, relationship: e.target.value })}
-                  required
-                  className="w-full px-4 py-3 rounded-xl bg-slate-900 border border-slate-700 text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 text-sm font-medium"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-2">
-                  Context Memory Note (Spoken to patient)
-                </label>
-                <textarea
-                  rows={3}
-                  placeholder="e.g. He lives in Pune and visits on Tuesdays."
-                  value={regForm.contextNote}
-                  onChange={(e) => setRegForm({ ...regForm, contextNote: e.target.value })}
-                  className="w-full px-4 py-3 rounded-xl bg-slate-900 border border-slate-700 text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 text-sm font-medium"
-                />
-              </div>
-
-              <div className="pt-4 flex items-center justify-end gap-3">
-                <button
-                  type="button"
-                  onClick={() => setSelectedVisitorForRegistration(null)}
-                  className="px-5 py-2.5 rounded-xl bg-slate-700 hover:bg-slate-600 text-slate-200 font-bold text-sm transition-colors"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="px-6 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-sm shadow-lg shadow-indigo-600/30 transition-all flex items-center gap-2"
-                >
-                  <UserCheck className="w-4 h-4" /> Save Visitor
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
     </div>
   );
 }

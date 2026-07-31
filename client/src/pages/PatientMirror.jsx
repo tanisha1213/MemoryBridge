@@ -1,43 +1,103 @@
 import React, { useEffect, useRef, useState } from 'react';
 import * as faceapi from '@vladmandic/face-api';
 import { Link } from 'react-router-dom';
-import { Volume2, CheckCircle2, Circle, ArrowLeft, RefreshCw, AlertCircle, Sparkles, User, Bell, Camera, Check } from 'lucide-react';
+import { io } from 'socket.io-client';
+import {
+  Volume2,
+  CheckCircle2,
+  Circle,
+  ArrowLeft,
+  RefreshCw,
+  AlertCircle,
+  Sparkles,
+  User,
+  Bell,
+  Camera,
+  Globe,
+  Radio
+} from 'lucide-react';
+import {
+  TRANSLATIONS,
+  getLocalizedText,
+  getLocalizedRelationship
+} from '../i18n/translations';
 
 const MODEL_CDN = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model/';
 
 export default function PatientMirror() {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
+  const socketRef = useRef(null);
 
-  // System states
+  // System & Language states
+  const [currentLang, setCurrentLang] = useState('en-US'); // 'en-US' | 'hi-IN' | 'mr-IN' | 'es-ES'
   const [isModelLoaded, setIsModelLoaded] = useState(false);
   const [modelStatus, setModelStatus] = useState('Initializing AI face detection...');
   const [cameraActive, setCameraActive] = useState(false);
   const [cameraError, setCameraError] = useState(null);
+  const [socketConnected, setSocketConnected] = useState(false);
 
   // Visitors and Recognition states
   const [registeredVisitors, setRegisteredVisitors] = useState([]);
   const [recognizedPerson, setRecognizedPerson] = useState(null);
+  const [isUnknownPresent, setIsUnknownPresent] = useState(false);
   const [detectionDistance, setDetectionDistance] = useState(null);
   const [toastMessage, setToastMessage] = useState(null);
 
   // Reminders
   const [reminders, setReminders] = useState([]);
 
-  // Tracking refs to prevent speech spam and duplicate snapshots
+  // Tracking refs
   const lastSpokenPersonIdRef = useRef(null);
   const lastSpokenTimeRef = useRef(0);
   const lastUnknownSpokenTimeRef = useRef(0);
+  const lastUnknownCaptureTimeRef = useRef(0);
   const hasCapturedForCurrentUnknownRef = useRef(false);
   const noFaceFramesCountRef = useRef(0);
   const isProcessingFrameRef = useRef(false);
+
+  const t = (key, params = {}) => getLocalizedText(currentLang, key, params);
 
   const showToast = (msg) => {
     setToastMessage(msg);
     setTimeout(() => setToastMessage(null), 5000);
   };
 
-  // Load face-api models and fetch server data on mount
+  // Socket.io Connection Setup
+  useEffect(() => {
+    const socketUrl = window.location.origin.includes('localhost')
+      ? 'http://localhost:5000'
+      : window.location.origin;
+
+    const socket = io(socketUrl, {
+      transports: ['websocket', 'polling'],
+      reconnectionAttempts: 5,
+    });
+
+    socketRef.current = socket;
+
+    socket.on('connect', () => {
+      console.log('⚡ Patient Mirror Socket connected:', socket.id);
+      setSocketConnected(true);
+    });
+
+    socket.on('disconnect', () => {
+      setSocketConnected(false);
+    });
+
+    socket.on('PATIENT_SETTINGS_UPDATED', (data) => {
+      if (data && data.nativeLanguage) {
+        setCurrentLang(data.nativeLanguage);
+        showToast(`🌐 Language updated to ${data.nativeLanguage}`);
+      }
+    });
+
+    return () => {
+      socket.disconnect();
+    };
+  }, []);
+
+  // Load face-api models and server data
   useEffect(() => {
     async function loadModelsAndData() {
       try {
@@ -53,7 +113,7 @@ export default function PatientMirror() {
         setIsModelLoaded(true);
         setModelStatus('AI Face Detector Ready');
       } catch (err) {
-        console.warn('CDN model load failed, trying tiny detector fallback...', err);
+        console.warn('CDN model load failed, fallback to tiny detector...', err);
         try {
           await Promise.all([
             faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_CDN),
@@ -63,8 +123,7 @@ export default function PatientMirror() {
           setIsModelLoaded(true);
           setModelStatus('Tiny AI Face Detector Ready');
         } catch (localErr) {
-          console.error('Failed to load face-api models:', localErr);
-          setModelStatus('Smart camera active (manual & auto trigger ready)');
+          setModelStatus('Smart camera active');
           setIsModelLoaded(true);
         }
       }
@@ -77,24 +136,26 @@ export default function PatientMirror() {
 
   const fetchData = async () => {
     try {
-      const visitorsRes = await fetch('/api/visitors?registered=true');
-      if (visitorsRes.ok) {
-        setRegisteredVisitors(await visitorsRes.json());
-      }
+      const [visitorsRes, remindersRes, settingsRes] = await Promise.all([
+        fetch('/api/visitors?registered=true'),
+        fetch('/api/reminders'),
+        fetch('/api/settings'),
+      ]);
 
-      const remindersRes = await fetch('/api/reminders');
-      if (remindersRes.ok) {
-        setReminders(await remindersRes.json());
+      if (visitorsRes.ok) setRegisteredVisitors(await visitorsRes.json());
+      if (remindersRes.ok) setReminders(await remindersRes.json());
+      if (settingsRes.ok) {
+        const s = await settingsRes.json();
+        if (s.nativeLanguage) setCurrentLang(s.nativeLanguage);
       }
     } catch (err) {
       console.error('Error fetching patient mirror data:', err);
     }
   };
 
-  // Auto-fetch data polling every 3s
   useEffect(() => {
     fetchData();
-    const interval = setInterval(fetchData, 3000);
+    const interval = setInterval(fetchData, 4000);
     return () => clearInterval(interval);
   }, []);
 
@@ -119,7 +180,7 @@ export default function PatientMirror() {
           setCameraActive(true);
         }
       } catch (err) {
-        console.error('Camera access denied or unavailable:', err);
+        console.error('Camera access denied:', err);
         setCameraError('Camera access unavailable. Please enable webcam permissions.');
         setCameraActive(false);
       }
@@ -128,13 +189,9 @@ export default function PatientMirror() {
     startCamera();
 
     return () => {
-      if (stream) {
-        stream.getTracks().forEach((track) => track.stop());
-      }
+      if (stream) stream.getTracks().forEach((t) => t.stop());
     };
   }, []);
-
-  const lastUnknownCaptureTimeRef = useRef(0);
 
   // Continuous face detection loop
   useEffect(() => {
@@ -157,7 +214,6 @@ export default function PatientMirror() {
         const video = videoRef.current;
         let detection = null;
 
-        // Attempt 1: SSD Mobilenet
         try {
           if (faceapi.nets.ssdMobilenetv1.isLoaded) {
             detection = await faceapi
@@ -167,7 +223,6 @@ export default function PatientMirror() {
           }
         } catch (e) {}
 
-        // Attempt 2: Tiny Face Detector
         if (!detection) {
           try {
             if (faceapi.nets.tinyFaceDetector.isLoaded) {
@@ -182,7 +237,7 @@ export default function PatientMirror() {
         const now = Date.now();
 
         if (detection) {
-          noFaceFramesCountRef.current = 0; // Reset missing face counter when face is visible
+          noFaceFramesCountRef.current = 0;
 
           const liveDescriptor = Array.from(detection.descriptor);
           let bestMatch = null;
@@ -201,15 +256,16 @@ export default function PatientMirror() {
           // Match condition: Distance < 0.65
           if (bestMatch && minDistance < 0.65) {
             setRecognizedPerson(bestMatch);
+            setIsUnknownPresent(false);
             setDetectionDistance(minDistance.toFixed(2));
             speakMemoryCue(bestMatch);
             hasCapturedForCurrentUnknownRef.current = false;
           } else {
             // UNRECOGNIZED FACE DETECTED
             setRecognizedPerson(null);
+            setIsUnknownPresent(true);
             setDetectionDistance(null);
 
-            // TAKE EXACTLY 1 SNAPSHOT PER UNKNOWN VISITOR EPISODE (45-second cooldown lock)
             if (
               !hasCapturedForCurrentUnknownRef.current &&
               now - lastUnknownCaptureTimeRef.current > 45000
@@ -221,12 +277,11 @@ export default function PatientMirror() {
             }
           }
         } else {
-          // Increment missing face frame counter
           noFaceFramesCountRef.current += 1;
           setRecognizedPerson(null);
+          setIsUnknownPresent(false);
           setDetectionDistance(null);
 
-          // Require NO face detected for at least 30 frames (~15 seconds) AND 45s cooldown before resetting encounter lock
           if (
             noFaceFramesCountRef.current > 30 &&
             now - lastUnknownCaptureTimeRef.current > 45000
@@ -248,7 +303,7 @@ export default function PatientMirror() {
     return () => {
       if (intervalId) clearInterval(intervalId);
     };
-  }, [cameraActive, isModelLoaded, registeredVisitors]);
+  }, [cameraActive, isModelLoaded, registeredVisitors, currentLang]);
 
   const calcEuclideanDistance = (arr1, arr2) => {
     return Math.sqrt(
@@ -256,7 +311,7 @@ export default function PatientMirror() {
     );
   };
 
-  // Automatic Voice Announcement for RECOGNIZED Visitor
+  // Multilingual SpeechSynthesis for RECOGNIZED Visitor
   const speakMemoryCue = (person) => {
     if (!('speechSynthesis' in window)) return;
 
@@ -274,40 +329,54 @@ export default function PatientMirror() {
     window.speechSynthesis.cancel();
 
     setTimeout(() => {
-      const textToSpeak = `This is your ${person.relationship.toLowerCase()}, ${person.name}. ${person.contextNote || ''}`;
+      const relLocalized = getLocalizedRelationship(person.relationship, currentLang);
+      const textToSpeak = t('recognizedAudio', {
+        relationship: relLocalized,
+        name: person.name,
+        contextNote: person.contextNote || '',
+      });
+
       const utterance = new SpeechSynthesisUtterance(textToSpeak);
+      utterance.lang = currentLang;
       utterance.volume = 1.0;
       utterance.rate = 0.88;
       utterance.pitch = 1.0;
+
+      // Select voice matching language if available
+      const voices = window.speechSynthesis.getVoices();
+      const matchedVoice = voices.find((v) => v.lang.startsWith(currentLang.split('-')[0]));
+      if (matchedVoice) utterance.voice = matchedVoice;
 
       window.speechSynthesis.speak(utterance);
     }, 60);
   };
 
-  // Automatic Voice Announcement for UNRECOGNIZED Visitor
+  // Multilingual SpeechSynthesis for UNRECOGNIZED Visitor
   const speakUnknownAnnouncement = () => {
     if (!('speechSynthesis' in window)) return;
 
     const now = Date.now();
-    if (now - lastUnknownSpokenTimeRef.current < 20000) {
-      return;
-    }
+    if (now - lastUnknownSpokenTimeRef.current < 20000) return;
     lastUnknownSpokenTimeRef.current = now;
 
     window.speechSynthesis.cancel();
 
     setTimeout(() => {
-      const textToSpeak = "An unrecognized visitor is here. A snapshot has been saved for your caregiver.";
+      const textToSpeak = t('unrecognizedAudio');
       const utterance = new SpeechSynthesisUtterance(textToSpeak);
+      utterance.lang = currentLang;
       utterance.volume = 1.0;
       utterance.rate = 0.88;
-      utterance.pitch = 1.0;
+
+      const voices = window.speechSynthesis.getVoices();
+      const matchedVoice = voices.find((v) => v.lang.startsWith(currentLang.split('-')[0]));
+      if (matchedVoice) utterance.voice = matchedVoice;
 
       window.speechSynthesis.speak(utterance);
     }, 60);
   };
 
-  // Capture Base64 frame snapshot and send to /api/visitors/unknown
+  // Capture Base64 frame snapshot & Emit Socket.io UNKNOWN_VISITOR_EVENT
   const captureAndPostUnknownVisitor = async (liveDescriptor = null, isManual = false) => {
     try {
       showToast(isManual ? '📸 Capturing manual snapshot...' : '📸 Unrecognized face detected! Capturing...');
@@ -328,9 +397,7 @@ export default function PatientMirror() {
           ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
           ctx.restore();
           drawnSuccess = true;
-        } catch (canvasErr) {
-          console.warn('Video canvas draw error:', canvasErr);
-        }
+        } catch (canvasErr) {}
       }
 
       if (!drawnSuccess) {
@@ -351,6 +418,17 @@ export default function PatientMirror() {
       const photoThumbnail = canvas.toDataURL('image/jpeg', 0.75);
       const dummyDescriptor = Array.from({ length: 128 }, () => (Math.random() - 0.5) * 0.1);
 
+      // Emit Real-Time Socket Event to Caregiver Portal
+      if (socketRef.current) {
+        socketRef.current.emit('UNKNOWN_VISITOR_EVENT', {
+          photoThumbnail,
+          faceDescriptor: liveDescriptor || dummyDescriptor,
+          cameraId: 'patient_mirror_1',
+          timestamp: new Date(),
+        });
+      }
+
+      // REST API Backup Post
       const res = await fetch('/api/visitors/unknown', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -367,13 +445,10 @@ export default function PatientMirror() {
             : '✅ Unrecognized visitor logged in Caregiver Queue!'
         );
       } else {
-        const errJson = await res.json().catch(() => ({}));
-        showToast(`⚠️ API Error: ${errJson.error || res.statusText}`);
         hasCapturedForCurrentUnknownRef.current = false;
       }
     } catch (err) {
       console.error('Failed to post unknown snapshot:', err);
-      showToast(`❌ Capture Error: ${err.message}`);
       hasCapturedForCurrentUnknownRef.current = false;
     }
   };
@@ -390,9 +465,7 @@ export default function PatientMirror() {
           prev.map((r) => (r._id === id ? { ...r, isCompleted: !currentStatus } : r))
         );
       }
-    } catch (err) {
-      console.error('Error toggling reminder:', err);
-    }
+    } catch (err) {}
   };
 
   const replaySpeech = () => {
@@ -416,7 +489,7 @@ export default function PatientMirror() {
       const fallbackPerson = {
         _id: 'demo_1',
         name: 'RAHUL',
-        relationship: 'NEPHEW',
+        relationship: 'Nephew',
         contextNote: 'He lives in Pune and visits on Tuesdays.',
       };
       setRecognizedPerson(fallbackPerson);
@@ -438,53 +511,74 @@ export default function PatientMirror() {
       )}
 
       {/* Top Header Bar */}
-      <header className="w-full bg-[#FFFDD0]/90 backdrop-blur border-b border-amber-200/80 px-6 py-4 flex items-center justify-between shadow-sm z-20">
+      <header className="w-full bg-[#FFFDD0]/90 backdrop-blur border-b border-amber-200/80 px-6 py-4 flex flex-wrap items-center justify-between gap-4 shadow-sm z-20">
         <div className="flex items-center gap-4">
           <Link
             to="/caregiver"
             className="p-2.5 rounded-xl bg-amber-200/80 hover:bg-amber-300 text-[#0A192F] transition-colors flex items-center gap-2 font-bold text-sm"
           >
-            <ArrowLeft className="w-5 h-5" /> Caregiver Portal
+            <ArrowLeft className="w-5 h-5" /> {t('caregiverPortalLink')}
           </Link>
           <div className="hidden sm:flex items-center gap-2 px-3 py-1 rounded-full bg-amber-200/60 text-[#0A192F] text-xs font-bold uppercase tracking-wider">
             <span className="w-2.5 h-2.5 rounded-full bg-emerald-600 animate-pulse" />
-            Patient Mirror View
+            {t('patientMirrorTitle')}
           </div>
+          {socketConnected && (
+            <span className="hidden md:inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-xs font-bold">
+              <Radio className="w-3.5 h-3.5 text-emerald-600 animate-pulse" /> Socket Live
+            </span>
+          )}
         </div>
 
+        {/* FLOATING LANGUAGE SWITCHER BADGE REQUIREMENT */}
+        <div className="flex items-center gap-2 bg-amber-200/70 p-1.5 rounded-2xl border border-amber-300">
+          <Globe className="w-4 h-4 text-[#0A192F] ml-1" />
+          {Object.keys(TRANSLATIONS).map((langKey) => (
+            <button
+              key={langKey}
+              onClick={() => setCurrentLang(langKey)}
+              className={`px-3 py-1.5 rounded-xl text-xs font-extrabold transition-all flex items-center gap-1.5 ${
+                currentLang === langKey
+                  ? 'bg-[#0A192F] text-white shadow'
+                  : 'text-[#0A192F] hover:bg-amber-300/80'
+              }`}
+            >
+              <span>{TRANSLATIONS[langKey].flag}</span>
+              <span>{TRANSLATIONS[langKey].label}</span>
+            </button>
+          ))}
+        </div>
+
+        {/* Action Controls */}
         <div className="flex items-center gap-3">
           <button
             onClick={() => captureAndPostUnknownVisitor(null, true)}
-            className="px-4 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 font-extrabold text-sm shadow-md transition-all flex items-center gap-2 transform active:scale-95"
-            title="Force capture snapshot and log as unknown visitor in Caregiver Queue"
+            className="px-4 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 font-extrabold text-sm shadow-md transition-all flex items-center gap-2"
           >
-            <Camera className="w-4 h-4" /> Capture Unknown Snapshot
+            <Camera className="w-4 h-4" /> {t('captureSnapshot')}
           </button>
           <button
             onClick={simulateDemoMatch}
             className="px-4 py-2.5 rounded-xl bg-[#0A192F] text-[#FFFDD0] font-bold text-sm shadow hover:bg-navy-800 transition-all flex items-center gap-2"
-            title="Simulate face detection cue card for demo"
           >
-            <Sparkles className="w-4 h-4 text-amber-300" /> Demo Cue Trigger
+            <Sparkles className="w-4 h-4 text-amber-300" /> {t('demoTrigger')}
           </button>
           <button
             onClick={fetchData}
             className="p-2.5 rounded-xl bg-amber-200/80 hover:bg-amber-300 text-[#0A192F] transition-colors"
-            title="Refresh patient reminders and visitor database"
           >
             <RefreshCw className="w-5 h-5" />
           </button>
         </div>
       </header>
 
-      {/* Main Grid Content */}
+      {/* Main Content Grid */}
       <main className="flex-1 max-w-7xl w-full mx-auto p-4 md:p-8 grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
         
         {/* Left Column: Live Webcam Mirror Frame */}
         <section className="lg:col-span-7 flex flex-col items-center">
           <div className="relative w-full aspect-[4/3] max-w-2xl bg-slate-900 rounded-3xl overflow-hidden border-8 border-[#0A192F] shadow-2xl pulse-glow">
             
-            {/* Live Video Element */}
             <video
               ref={videoRef}
               autoPlay
@@ -494,7 +588,6 @@ export default function PatientMirror() {
             />
             <canvas ref={canvasRef} className="hidden" />
 
-            {/* Camera Overlay Elements */}
             {!cameraActive && (
               <div className="absolute inset-0 bg-slate-900/90 text-amber-100 flex flex-col items-center justify-center p-6 text-center">
                 <AlertCircle className="w-16 h-16 text-amber-400 mb-4" />
@@ -503,13 +596,12 @@ export default function PatientMirror() {
               </div>
             )}
 
-            {/* Status Pill Badge inside Video */}
             <div className="absolute top-4 left-4 bg-slate-900/80 backdrop-blur-md px-4 py-2 rounded-full border border-slate-700 flex items-center gap-2 text-xs font-semibold text-white">
               <span className={`w-2.5 h-2.5 rounded-full ${cameraActive ? 'bg-emerald-500 animate-ping' : 'bg-amber-500'}`} />
-              {isModelLoaded ? 'AI Face Guard Active' : modelStatus}
+              {isModelLoaded ? t('aiGuardActive') : modelStatus}
             </div>
 
-            {/* Dynamic Recognition Box Indicator */}
+            {/* Recognized Visitor Indicator */}
             {recognizedPerson && (
               <div className="absolute bottom-4 left-4 right-4 bg-emerald-950/85 backdrop-blur-md border border-emerald-500/50 p-4 rounded-2xl flex items-center justify-between text-emerald-100 animate-fade-in">
                 <div className="flex items-center gap-3">
@@ -518,7 +610,9 @@ export default function PatientMirror() {
                   </div>
                   <div>
                     <p className="text-xs uppercase tracking-wider text-emerald-300 font-bold">Face Identified</p>
-                    <p className="text-lg font-extrabold">{recognizedPerson.name} ({recognizedPerson.relationship})</p>
+                    <p className="text-lg font-extrabold">
+                      {recognizedPerson.name} ({getLocalizedRelationship(recognizedPerson.relationship, currentLang)})
+                    </p>
                   </div>
                 </div>
                 {detectionDistance && (
@@ -528,6 +622,21 @@ export default function PatientMirror() {
                 )}
               </div>
             )}
+
+            {/* COMFORTING NEUTRAL PROMPT FOR UNRECOGNIZED VISITOR */}
+            {isUnknownPresent && !recognizedPerson && (
+              <div className="absolute bottom-4 left-4 right-4 bg-amber-950/90 backdrop-blur-md border-2 border-amber-400/80 p-4 rounded-2xl flex items-center justify-between text-amber-100 animate-bounce-short">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-full bg-amber-500/20 border border-amber-300 flex items-center justify-center text-amber-300">
+                    <User className="w-6 h-6" />
+                  </div>
+                  <div>
+                    <p className="text-xs uppercase tracking-wider text-amber-300 font-bold">Visitor Alert</p>
+                    <p className="text-lg font-extrabold">{t('unrecognizedPrompt')}</p>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
 
           <p className="mt-3 text-sm text-[#0A192F]/70 text-center font-medium">
@@ -535,10 +644,10 @@ export default function PatientMirror() {
           </p>
         </section>
 
-        {/* Right Column: Memory Cue Card & Daily Reminders */}
+        {/* Right Column: Multilingual Memory Cue Card & Reminders */}
         <section className="lg:col-span-5 space-y-6">
 
-          {/* MEMORY CUE CARD (High Contrast, Bold Accessibility Requirements) */}
+          {/* DYNAMIC MEMORY CUE CARD */}
           {recognizedPerson ? (
             <div className="bg-[#0A192F] text-[#FFFDD0] p-8 rounded-3xl shadow-2xl border-4 border-indigo-500 transform transition-all duration-300 scale-100 animate-bounce-short">
               <div className="flex items-center justify-between border-b border-indigo-400/30 pb-4 mb-6">
@@ -554,11 +663,16 @@ export default function PatientMirror() {
                 </button>
               </div>
 
-              <h2 className="text-[40px] leading-tight font-extrabold uppercase tracking-tight text-white mb-4">
-                THIS IS YOUR {recognizedPerson.relationship}, {recognizedPerson.name}
+              {/* MULTILINGUAL CUE HEADER (32px+ Requirement) */}
+              <h2 className="text-3xl md:text-4xl leading-tight font-extrabold uppercase tracking-tight text-white mb-4">
+                {t('cueHeader', {
+                  relationship: getLocalizedRelationship(recognizedPerson.relationship, currentLang),
+                  name: recognizedPerson.name,
+                })}
               </h2>
 
-              <p className="text-[28px] leading-snug font-medium text-amber-200">
+              {/* SUBTEXT */}
+              <p className="text-2xl md:text-3xl leading-snug font-medium text-amber-200">
                 "{recognizedPerson.contextNote || `Visits frequently and cares for you.`}"
               </p>
             </div>
@@ -567,9 +681,11 @@ export default function PatientMirror() {
               <div className="w-16 h-16 rounded-full bg-amber-200 flex items-center justify-center mx-auto text-[#0A192F]">
                 <User className="w-8 h-8" />
               </div>
-              <h3 className="text-2xl font-bold text-[#0A192F]">Waiting for Visitor...</h3>
+              <h3 className="text-2xl font-bold text-[#0A192F]">
+                {isUnknownPresent ? t('unrecognizedPrompt') : t('waitingTitle')}
+              </h3>
               <p className="text-base text-[#0A192F]/80">
-                Look directly into the camera. Unrecognized faces are automatically captured and announced for patient safety.
+                {t('waitingDescription')}
               </p>
             </div>
           )}
@@ -578,10 +694,10 @@ export default function PatientMirror() {
           <div className="bg-white p-6 rounded-3xl shadow-xl border border-amber-200/80 space-y-4">
             <div className="flex items-center justify-between border-b border-amber-100 pb-3">
               <h3 className="text-xl font-bold text-[#0A192F] flex items-center gap-2">
-                <Bell className="w-6 h-6 text-indigo-600" /> Daily Reminders
+                <Bell className="w-6 h-6 text-indigo-600" /> {t('dailyReminders')}
               </h3>
               <span className="text-xs font-semibold px-3 py-1 rounded-full bg-amber-100 text-[#0A192F]">
-                {reminders.filter((r) => r.isCompleted).length} / {reminders.length} Completed
+                {reminders.filter((r) => r.isCompleted).length} / {reminders.length} {t('completed')}
               </span>
             </div>
 

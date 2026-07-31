@@ -4,17 +4,22 @@ const visitorSchema = new mongoose.Schema(
   {
     name: {
       type: String,
-      default: 'Unknown Visitor',
+      default: 'Unrecognized Person',
       trim: true,
     },
     relationship: {
       type: String,
-      default: 'Unspecified',
+      default: 'Unknown',
       trim: true,
     },
     contextNote: {
       type: String,
       default: '',
+      trim: true,
+    },
+    preferredLanguage: {
+      type: String,
+      default: 'en-US',
       trim: true,
     },
     faceDescriptor: {

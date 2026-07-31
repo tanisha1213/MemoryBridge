@@ -9,29 +9,30 @@ if (dns.setDefaultResultOrder) {
 
 const app = express();
 
-// MongoDB Atlas URI
 const MONGODB_URI =
   process.env.MONGODB_URI ||
   'mongodb+srv://StackNovas:E1w8oBHfD71MzbEG@cluster0.c4jlm5g.mongodb.net/memorybridge?retryWrites=true&w=majority';
 
-// Middleware
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// Global memory cache across warm serverless function instances
 global._memoryBridgeVisitors = global._memoryBridgeVisitors || [];
 global._memoryBridgeReminders = global._memoryBridgeReminders || [
   { _id: 'rem_1', title: 'Drink Water', time: '2:00 PM', isCompleted: false, createdAt: new Date() },
   { _id: 'rem_2', title: 'Take Afternoon Medication', time: '3:30 PM', isCompleted: false, createdAt: new Date() },
 ];
+global._memoryBridgeSettings = global._memoryBridgeSettings || {
+  nativeLanguage: 'en-US',
+  patientName: 'Elder Patient',
+};
 
-// Mongoose Schemas
 const visitorSchema = new mongoose.Schema(
   {
     name: { type: String, default: 'Unrecognized Person', trim: true },
     relationship: { type: String, default: 'Unknown', trim: true },
     contextNote: { type: String, default: '', trim: true },
+    preferredLanguage: { type: String, default: 'en-US', trim: true },
     faceDescriptor: { type: [Number], default: [] },
     photoThumbnail: { type: String, required: true },
     isRegistered: { type: Boolean, default: false },
@@ -52,16 +53,13 @@ const reminderSchema = new mongoose.Schema(
 const Visitor = mongoose.models.Visitor || mongoose.model('Visitor', visitorSchema);
 const Reminder = mongoose.models.Reminder || mongoose.model('Reminder', reminderSchema);
 
-// Cached DB Connection Helper
 let cachedConn = null;
-
 async function connectDB() {
   if (mongoose.connection.readyState >= 1) return;
   if (!cachedConn) {
     cachedConn = mongoose.connect(MONGODB_URI, {
       serverSelectionTimeoutMS: 3500,
     }).catch((err) => {
-      console.warn('MongoDB connection attempt failed:', err.message);
       cachedConn = null;
     });
   }
@@ -70,15 +68,11 @@ async function connectDB() {
 
 const isDbConnected = () => mongoose.connection.readyState === 1;
 
-// Database connection middleware
 app.use(async (req, res, next) => {
-  try {
-    await connectDB();
-  } catch (e) {}
+  try { await connectDB(); } catch (e) {}
   next();
 });
 
-// Helper for visitor list
 async function getVisitors(registeredQuery) {
   if (isDbConnected()) {
     try {
@@ -100,7 +94,6 @@ async function getVisitors(registeredQuery) {
   return filtered;
 }
 
-// ROUTE HANDLERS
 const handleVisitorsGet = async (req, res) => {
   try {
     const list = await getVisitors(req.query.registered);
@@ -113,9 +106,7 @@ const handleVisitorsGet = async (req, res) => {
 const handleUnknownPost = async (req, res) => {
   try {
     const { photoThumbnail, faceDescriptor } = req.body;
-    if (!photoThumbnail) {
-      return res.status(400).json({ error: 'photoThumbnail is required' });
-    }
+    if (!photoThumbnail) return res.status(400).json({ error: 'photoThumbnail is required' });
 
     const newVisitorData = {
       name: 'Unrecognized Person',
@@ -133,9 +124,7 @@ const handleUnknownPost = async (req, res) => {
         await newVisitor.save();
         global._memoryBridgeVisitors.unshift(newVisitor.toObject());
         return res.status(201).json(newVisitor);
-      } catch (dbErr) {
-        console.warn('MongoDB unknown save error:', dbErr.message);
-      }
+      } catch (dbErr) {}
     }
 
     const newVisitor = {
@@ -147,17 +136,14 @@ const handleUnknownPost = async (req, res) => {
     global._memoryBridgeVisitors.unshift(newVisitor);
     return res.status(201).json(newVisitor);
   } catch (err) {
-    console.error('Error logging unknown visitor:', err);
     return res.status(500).json({ error: err.message || 'Failed to log unknown visitor' });
   }
 };
 
 const handleRegisterPost = async (req, res) => {
   try {
-    const { id, name, relationship, contextNote, faceDescriptor, photoThumbnail } = req.body;
-    if (!name || !relationship) {
-      return res.status(400).json({ error: 'Name and Relationship are required' });
-    }
+    const { id, name, relationship, contextNote, faceDescriptor, photoThumbnail, preferredLanguage } = req.body;
+    if (!name || !relationship) return res.status(400).json({ error: 'Name and Relationship required' });
 
     if (isDbConnected()) {
       try {
@@ -169,6 +155,7 @@ const handleRegisterPost = async (req, res) => {
           visitor.name = name;
           visitor.relationship = relationship;
           visitor.contextNote = contextNote || '';
+          if (preferredLanguage) visitor.preferredLanguage = preferredLanguage;
           if (faceDescriptor && faceDescriptor.length) visitor.faceDescriptor = faceDescriptor;
           if (photoThumbnail) visitor.photoThumbnail = photoThumbnail;
           visitor.isRegistered = true;
@@ -187,6 +174,7 @@ const handleRegisterPost = async (req, res) => {
             name,
             relationship,
             contextNote: contextNote || '',
+            preferredLanguage: preferredLanguage || 'en-US',
             faceDescriptor: faceDescriptor || [],
             photoThumbnail: photoThumbnail || '',
             isRegistered: true,
@@ -196,9 +184,7 @@ const handleRegisterPost = async (req, res) => {
           global._memoryBridgeVisitors.unshift(newVisitor.toObject());
           return res.status(201).json(newVisitor);
         }
-      } catch (dbErr) {
-        console.warn('MongoDB register error:', dbErr.message);
-      }
+      } catch (dbErr) {}
     }
 
     let existingIndex = -1;
@@ -212,6 +198,7 @@ const handleRegisterPost = async (req, res) => {
       item.name = name;
       item.relationship = relationship;
       item.contextNote = contextNote || '';
+      if (preferredLanguage) item.preferredLanguage = preferredLanguage;
       if (faceDescriptor && faceDescriptor.length) item.faceDescriptor = faceDescriptor;
       if (photoThumbnail) item.photoThumbnail = photoThumbnail;
       item.isRegistered = true;
@@ -223,6 +210,7 @@ const handleRegisterPost = async (req, res) => {
         name,
         relationship,
         contextNote: contextNote || '',
+        preferredLanguage: preferredLanguage || 'en-US',
         faceDescriptor: faceDescriptor || [],
         photoThumbnail: photoThumbnail || '',
         isRegistered: true,
@@ -238,67 +226,10 @@ const handleRegisterPost = async (req, res) => {
   }
 };
 
-const handleVisitorDelete = async (req, res, id) => {
-  try {
-    if (isDbConnected()) {
-      try { await Visitor.findByIdAndDelete(id); } catch (e) {}
-    }
-    global._memoryBridgeVisitors = global._memoryBridgeVisitors.filter((v) => String(v._id) !== String(id));
-    return res.json({ message: 'Visitor deleted successfully' });
-  } catch (err) {
-    return res.status(500).json({ error: 'Failed to delete visitor' });
-  }
-};
-
-// Reminders Route Handlers
-const handleRemindersGet = async (req, res) => {
-  try {
-    if (isDbConnected()) {
-      try {
-        const reminders = await Reminder.find().sort({ createdAt: 1 });
-        return res.json(reminders);
-      } catch (e) {}
-    }
-    return res.json(global._memoryBridgeReminders);
-  } catch (e) {
-    return res.status(500).json({ error: 'Failed to fetch reminders' });
-  }
-};
-
-const handleRemindersPost = async (req, res) => {
-  try {
-    const { title, time } = req.body;
-    if (!title || !time) return res.status(400).json({ error: 'Title and time required' });
-
-    if (isDbConnected()) {
-      try {
-        const reminder = new Reminder({ title, time, isCompleted: false });
-        await reminder.save();
-        global._memoryBridgeReminders.push(reminder.toObject());
-        return res.status(201).json(reminder);
-      } catch (e) {}
-    }
-
-    const reminder = {
-      _id: 'rem_' + Date.now(),
-      title,
-      time,
-      isCompleted: false,
-      createdAt: new Date(),
-    };
-    global._memoryBridgeReminders.push(reminder);
-    return res.status(201).json(reminder);
-  } catch (e) {
-    return res.status(500).json({ error: 'Failed to create reminder' });
-  }
-};
-
-// Main Serverless Router
 app.all('*', async (req, res) => {
   const urlPath = req.path || req.url || '';
   const method = req.method.toUpperCase();
 
-  // Visitor Routes
   if (urlPath.includes('/visitors/unknown')) {
     if (method === 'GET') return handleVisitorsGet({ ...req, query: { ...req.query, registered: 'false' } }, res);
     if (method === 'POST') return handleUnknownPost(req, res);
@@ -311,34 +242,38 @@ app.all('*', async (req, res) => {
   if (urlPath.includes('/visitors')) {
     const parts = urlPath.split('/').filter(Boolean);
     const lastPart = parts[parts.length - 1];
-
     if (method === 'DELETE' && lastPart && lastPart !== 'visitors') {
-      return handleVisitorDelete(req, res, lastPart);
+      if (isDbConnected()) {
+        try { await Visitor.findByIdAndDelete(lastPart); } catch (e) {}
+      }
+      global._memoryBridgeVisitors = global._memoryBridgeVisitors.filter((v) => String(v._id) !== String(lastPart));
+      return res.json({ message: 'Visitor deleted successfully' });
     }
     if (method === 'GET') return handleVisitorsGet(req, res);
   }
 
-  // Reminder Routes
   if (urlPath.includes('/reminders')) {
-    const parts = urlPath.split('/').filter(Boolean);
-    const lastPart = parts[parts.length - 1];
-
-    if (method === 'GET') return handleRemindersGet(req, res);
-    if (method === 'POST') return handleRemindersPost(req, res);
-    if (method === 'DELETE' && lastPart && lastPart !== 'reminders') {
-      if (isDbConnected()) {
-        try { await Reminder.findByIdAndDelete(lastPart); } catch (e) {}
-      }
-      global._memoryBridgeReminders = global._memoryBridgeReminders.filter((r) => String(r._id) !== String(lastPart));
-      return res.json({ message: 'Reminder deleted' });
+    if (method === 'GET') return res.json(global._memoryBridgeReminders);
+    if (method === 'POST') {
+      const { title, time } = req.body;
+      const reminder = { _id: 'rem_' + Date.now(), title, time, isCompleted: false, createdAt: new Date() };
+      global._memoryBridgeReminders.push(reminder);
+      return res.status(201).json(reminder);
     }
   }
 
-  // Health
+  if (urlPath.includes('/settings')) {
+    if (method === 'GET') return res.json(global._memoryBridgeSettings);
+    if (method === 'POST') {
+      global._memoryBridgeSettings = { ...global._memoryBridgeSettings, ...req.body };
+      return res.json(global._memoryBridgeSettings);
+    }
+  }
+
   if (urlPath.includes('/health')) {
     return res.json({
       status: 'ok',
-      app: 'MemoryBridge Serverless',
+      app: 'MemoryBridge Serverless Handler',
       database: isDbConnected() ? 'connected' : 'memory mode',
       timestamp: new Date().toISOString(),
     });
