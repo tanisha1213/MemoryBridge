@@ -4,13 +4,11 @@ const fs = require('fs');
 const path = require('path');
 const Visitor = require('../models/Visitor');
 
-// Global memory cache across Vercel serverless function warm starts
 global._memoryBridgeVisitors = global._memoryBridgeVisitors || [];
 
 const DATA_DIR = path.join(__dirname, '../data');
 const FILE_PATH = path.join(DATA_DIR, 'visitors.json');
 
-// Load initial file storage if exists and writeable
 try {
   if (fs.existsSync(FILE_PATH) && global._memoryBridgeVisitors.length === 0) {
     const raw = fs.readFileSync(FILE_PATH, 'utf8');
@@ -32,14 +30,21 @@ const isDbConnected = () => {
   return mongoose.connection.readyState === 1;
 };
 
+// Helper to extract userId
+const getUserId = (req) => {
+  return req.headers['x-user-id'] || req.query.userId || req.body?.userId || null;
+};
+
 // GET /api/visitors
 router.get('/', async (req, res) => {
   try {
     const { registered } = req.query;
+    const userId = getUserId(req);
 
     if (isDbConnected()) {
       try {
         let filter = {};
+        if (userId) filter.userId = userId;
         if (registered === 'true') filter.isRegistered = true;
         if (registered === 'false') {
           filter.$or = [{ isRegistered: false }, { isRegistered: { $exists: false } }, { isRegistered: null }];
@@ -52,6 +57,7 @@ router.get('/', async (req, res) => {
     }
 
     let filtered = [...global._memoryBridgeVisitors];
+    if (userId) filtered = filtered.filter((v) => !v.userId || String(v.userId) === String(userId));
     if (registered === 'true') filtered = filtered.filter((v) => v.isRegistered === true);
     if (registered === 'false') filtered = filtered.filter((v) => !v.isRegistered);
 
@@ -70,16 +76,20 @@ router.get('/', async (req, res) => {
 // GET /api/visitors/unknown
 router.get('/unknown', async (req, res) => {
   try {
+    const userId = getUserId(req);
     if (isDbConnected()) {
       try {
-        const unknowns = await Visitor.find({
+        let filter = {
           $or: [{ isRegistered: false }, { isRegistered: { $exists: false } }, { isRegistered: null }],
-        }).sort({ lastSeen: -1, createdAt: -1 });
+        };
+        if (userId) filter.userId = userId;
+        const unknowns = await Visitor.find(filter).sort({ lastSeen: -1, createdAt: -1 });
         return res.json(unknowns);
       } catch (dbErr) {}
     }
 
-    const unknowns = global._memoryBridgeVisitors.filter((v) => !v.isRegistered);
+    let unknowns = global._memoryBridgeVisitors.filter((v) => !v.isRegistered);
+    if (userId) unknowns = unknowns.filter((v) => !v.userId || String(v.userId) === String(userId));
     unknowns.sort((a, b) => new Date(b.lastSeen || b.createdAt) - new Date(a.lastSeen || a.createdAt));
     return res.json(unknowns);
   } catch (error) {
@@ -91,11 +101,14 @@ router.get('/unknown', async (req, res) => {
 router.post('/unknown', async (req, res) => {
   try {
     const { photoThumbnail, faceDescriptor } = req.body;
+    const userId = getUserId(req);
+
     if (!photoThumbnail) {
       return res.status(400).json({ error: 'photoThumbnail is required' });
     }
 
     const newVisitorData = {
+      userId,
       name: 'Unrecognized Person',
       relationship: 'Unknown',
       contextNote: 'Captured by patient camera',
@@ -113,11 +126,10 @@ router.post('/unknown', async (req, res) => {
         saveLocalVisitors();
         return res.status(201).json(newVisitor);
       } catch (dbErr) {
-        console.warn('MongoDB save error on unknown visitor, falling back to memory store:', dbErr.message);
+        console.warn('MongoDB save error on unknown visitor:', dbErr.message);
       }
     }
 
-    // Resilient memory fallback
     const newVisitor = {
       _id: 'mem_' + Date.now() + '_' + Math.random().toString(36).substr(2, 4),
       ...newVisitorData,
@@ -136,7 +148,8 @@ router.post('/unknown', async (req, res) => {
 // POST /api/visitors/register - Save or update registered visitor
 router.post('/register', async (req, res) => {
   try {
-    const { id, name, relationship, contextNote, faceDescriptor, photoThumbnail } = req.body;
+    const { id, name, relationship, contextNote, faceDescriptor, photoThumbnail, preferredLanguage } = req.body;
+    const userId = getUserId(req);
 
     if (!name || !relationship) {
       return res.status(400).json({ error: 'Name and Relationship are required' });
@@ -146,13 +159,19 @@ router.post('/register', async (req, res) => {
       try {
         let visitor;
         if (id) visitor = await Visitor.findById(id);
-        if (!visitor && photoThumbnail) visitor = await Visitor.findOne({ photoThumbnail });
+        if (!visitor && photoThumbnail) {
+          let query = { photoThumbnail };
+          if (userId) query.userId = userId;
+          visitor = await Visitor.findOne(query);
+        }
 
         if (visitor) {
+          if (userId) visitor.userId = userId;
           visitor.name = name;
           visitor.relationship = relationship;
           visitor.contextNote = contextNote || '';
-          if (faceDescriptor && faceDescriptor.length) visitor.faceDescriptor = faceDescriptor;
+          if (preferredLanguage) visitor.preferredLanguage = preferredLanguage;
+          if (faceDescriptor && faceDescriptor.length === 128) visitor.faceDescriptor = faceDescriptor;
           if (photoThumbnail) visitor.photoThumbnail = photoThumbnail;
           visitor.isRegistered = true;
           visitor.lastSeen = new Date();
@@ -171,9 +190,11 @@ router.post('/register', async (req, res) => {
           return res.json(visitor);
         } else {
           const newVisitor = new Visitor({
+            userId,
             name,
             relationship,
             contextNote: contextNote || '',
+            preferredLanguage: preferredLanguage || 'en-US',
             faceDescriptor: faceDescriptor || [],
             photoThumbnail: photoThumbnail || '',
             isRegistered: true,
@@ -185,7 +206,7 @@ router.post('/register', async (req, res) => {
           return res.status(201).json(newVisitor);
         }
       } catch (dbErr) {
-        console.warn('MongoDB register error, using memory fallback:', dbErr.message);
+        console.warn('MongoDB register error:', dbErr.message);
       }
     }
 
@@ -199,10 +220,12 @@ router.post('/register', async (req, res) => {
 
     if (existingIndex !== -1) {
       const item = global._memoryBridgeVisitors[existingIndex];
+      if (userId) item.userId = userId;
       item.name = name;
       item.relationship = relationship;
       item.contextNote = contextNote || '';
-      if (faceDescriptor && faceDescriptor.length) item.faceDescriptor = faceDescriptor;
+      if (preferredLanguage) item.preferredLanguage = preferredLanguage;
+      if (faceDescriptor && faceDescriptor.length === 128) item.faceDescriptor = faceDescriptor;
       if (photoThumbnail) item.photoThumbnail = photoThumbnail;
       item.isRegistered = true;
       item.updatedAt = new Date();
@@ -211,9 +234,11 @@ router.post('/register', async (req, res) => {
     } else {
       const newVisitor = {
         _id: 'mem_' + Date.now() + '_' + Math.random().toString(36).substr(2, 4),
+        userId,
         name,
         relationship,
         contextNote: contextNote || '',
+        preferredLanguage: preferredLanguage || 'en-US',
         faceDescriptor: faceDescriptor || [],
         photoThumbnail: photoThumbnail || '',
         isRegistered: true,

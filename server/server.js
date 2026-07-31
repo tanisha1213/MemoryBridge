@@ -14,6 +14,7 @@ require('dotenv').config({ path: path.join(__dirname, '../.env') });
 
 const visitorRoutes = require('./routes/visitorRoutes');
 const reminderRoutes = require('./routes/reminderRoutes');
+const authRoutes = require('./routes/authRoutes');
 const ActivityLog = require('./models/ActivityLog');
 const PatientSetting = require('./models/PatientSetting');
 
@@ -38,13 +39,11 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// Attach socket instance to req
 app.use((req, res, next) => {
   req.io = io;
   next();
 });
 
-// Cached DB Connection for Serverless/Fast start
 let cachedConn = null;
 async function connectToDatabase() {
   if (mongoose.connection.readyState >= 1) return mongoose.connection;
@@ -68,7 +67,6 @@ app.use(async (req, res, next) => {
 io.on('connection', (socket) => {
   console.log('⚡ Socket client connected:', socket.id);
 
-  // Relays for Patient -> Caregiver Alerts
   socket.on('UNKNOWN_VISITOR_EVENT', async (data) => {
     console.log('🚨 UNKNOWN_VISITOR_EVENT received from patient camera');
     io.emit('UNKNOWN_VISITOR_DETECTED', {
@@ -76,10 +74,10 @@ io.on('connection', (socket) => {
       timestamp: new Date(),
     });
 
-    // Save to ActivityLog
     try {
       if (mongoose.connection.readyState === 1) {
         await ActivityLog.create({
+          userId: data.userId || null,
           eventType: 'UNKNOWN_VISITOR',
           eventData: data,
         });
@@ -107,6 +105,9 @@ io.on('connection', (socket) => {
 });
 
 // API Routes
+app.use('/api/auth', authRoutes);
+app.use('/auth', authRoutes);
+
 app.use('/api/visitors', visitorRoutes);
 app.use('/visitors', visitorRoutes);
 
@@ -116,8 +117,11 @@ app.use('/reminders', reminderRoutes);
 // Activity Logs Endpoint
 app.get('/api/logs', async (req, res) => {
   try {
+    const userId = req.headers['x-user-id'] || req.query.userId;
     if (mongoose.connection.readyState === 1) {
-      const logs = await ActivityLog.find().sort({ createdAt: -1 }).limit(50);
+      let query = {};
+      if (userId) query.userId = userId;
+      const logs = await ActivityLog.find(query).sort({ createdAt: -1 }).limit(50);
       return res.json(logs);
     }
     return res.json([]);
@@ -129,10 +133,13 @@ app.get('/api/logs', async (req, res) => {
 // Patient Settings Endpoint
 app.get('/api/settings', async (req, res) => {
   try {
+    const userId = req.headers['x-user-id'] || req.query.userId;
     if (mongoose.connection.readyState === 1) {
-      let settings = await PatientSetting.findOne();
+      let query = {};
+      if (userId) query.userId = userId;
+      let settings = await PatientSetting.findOne(query);
       if (!settings) {
-        settings = await PatientSetting.create({ nativeLanguage: 'en-US' });
+        settings = await PatientSetting.create({ userId, nativeLanguage: 'en-US' });
       }
       return res.json(settings);
     }
@@ -145,15 +152,19 @@ app.get('/api/settings', async (req, res) => {
 app.post('/api/settings', async (req, res) => {
   try {
     const { nativeLanguage, patientName, caregiverPhone } = req.body;
+    const userId = req.headers['x-user-id'] || req.body.userId;
+
     if (mongoose.connection.readyState === 1) {
-      let settings = await PatientSetting.findOne();
+      let query = {};
+      if (userId) query.userId = userId;
+      let settings = await PatientSetting.findOne(query);
       if (settings) {
         if (nativeLanguage) settings.nativeLanguage = nativeLanguage;
         if (patientName) settings.patientName = patientName;
         if (caregiverPhone) settings.caregiverPhone = caregiverPhone;
         await settings.save();
       } else {
-        settings = await PatientSetting.create({ nativeLanguage, patientName, caregiverPhone });
+        settings = await PatientSetting.create({ userId, nativeLanguage, patientName, caregiverPhone });
       }
       io.emit('PATIENT_SETTINGS_UPDATED', settings);
       return res.json(settings);
@@ -168,7 +179,7 @@ app.post('/api/settings', async (req, res) => {
 app.use('/api/health', (req, res) => {
   res.json({
     status: 'ok',
-    app: 'MemoryBridge Server with Socket.io',
+    app: 'MemoryBridge Server with Auth & Sockets',
     database: mongoose.connection.readyState === 1 ? 'connected' : 'in-memory fallback mode',
     socketsActive: io.engine.clientsCount,
     timestamp: new Date().toISOString(),

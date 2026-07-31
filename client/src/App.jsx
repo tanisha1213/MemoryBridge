@@ -2,18 +2,37 @@ import React from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate, Link } from 'react-router-dom';
 import PatientMirror from './pages/PatientMirror';
 import CaregiverDashboard from './pages/CaregiverDashboard';
-import { Heart, Camera, LayoutDashboard, ShieldCheck } from 'lucide-react';
+import Login from './pages/Login';
+import { Heart, Camera, LayoutDashboard, ShieldCheck, UserCheck } from 'lucide-react';
 
 function LandingPage() {
+  const userId = localStorage.getItem('mb_userId');
+  const patientName = localStorage.getItem('mb_patientName') || 'Tanisha';
+  const accessCode = localStorage.getItem('mb_accessCode') || 'MB-1001';
+
   return (
-    <div className="min-h-screen bg-slate-900 text-slate-100 flex flex-col items-center justify-center p-6 relative overflow-hidden">
+    <div className="min-h-screen bg-slate-900 text-slate-100 flex flex-col items-center justify-center p-6 relative overflow-hidden select-none">
       {/* Background radial glow */}
       <div className="absolute top-1/4 left-1/2 -translate-x-1/2 -translate-y-1/2 w-96 h-96 bg-indigo-600/20 rounded-full blur-3xl pointer-events-none" />
       <div className="absolute bottom-10 right-10 w-72 h-72 bg-emerald-600/10 rounded-full blur-3xl pointer-events-none" />
 
       <div className="max-w-3xl w-full text-center space-y-8 z-10">
-        <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-slate-800 border border-slate-700 text-indigo-400 text-sm font-medium">
-          <ShieldCheck className="w-4 h-4 text-emerald-400" /> 100% In-Browser Facial Recognition & AI Memory Assist
+        
+        {/* User Account Bar */}
+        <div className="flex flex-wrap items-center justify-between gap-3 bg-slate-800/80 border border-slate-700/80 p-3.5 px-6 rounded-2xl">
+          <div className="flex items-center gap-3">
+            <UserCheck className="w-5 h-5 text-emerald-400" />
+            <div className="text-left">
+              <p className="text-xs text-slate-400 font-bold uppercase">Active Family Profile</p>
+              <p className="text-sm font-extrabold text-white">{patientName} ({accessCode})</p>
+            </div>
+          </div>
+          <Link
+            to="/login"
+            className="px-4 py-1.5 bg-indigo-600/30 hover:bg-indigo-600/50 text-indigo-200 border border-indigo-500/40 rounded-xl text-xs font-bold transition-all"
+          >
+            Switch Account / Code
+          </Link>
         </div>
 
         <div className="space-y-4">
@@ -25,7 +44,7 @@ function LandingPage() {
           </p>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-6">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-2">
           <Link
             to="/patient"
             className="group p-8 rounded-2xl bg-gradient-to-b from-amber-50 to-amber-100 text-slate-900 shadow-xl hover:shadow-2xl transition-all duration-300 transform hover:-translate-y-1 flex flex-col items-center text-center border-2 border-amber-200"
@@ -59,10 +78,10 @@ function LandingPage() {
           </Link>
         </div>
 
-        <div className="pt-8 text-xs text-slate-500 flex items-center justify-center gap-4 border-t border-slate-800">
-          <span> privacy-first • local WebGL detection</span>
+        <div className="pt-6 text-xs text-slate-500 flex items-center justify-center gap-4 border-t border-slate-800">
+          <span>🔒 Privacy-First • Local WebGL Detection</span>
           <span>•</span>
-          <span>Zero external Python server required</span>
+          <span>Multi-User Isolated Storage</span>
         </div>
       </div>
     </div>
@@ -74,6 +93,7 @@ export default function App() {
     <Router>
       <Routes>
         <Route path="/" element={<LandingPage />} />
+        <Route path="/login" element={<Login />} />
         <Route path="/patient" element={<PatientMirror />} />
         <Route path="/caregiver" element={<CaregiverDashboard />} />
         <Route path="*" element={<Navigate to="/" replace />} />

@@ -134,12 +134,18 @@ export default function PatientMirror() {
     loadModelsAndData();
   }, []);
 
+  const getAuthHeaders = () => {
+    const userId = localStorage.getItem('mb_userId');
+    return userId ? { 'x-user-id': userId } : {};
+  };
+
   const fetchData = async () => {
     try {
+      const headers = getAuthHeaders();
       const [visitorsRes, remindersRes, settingsRes] = await Promise.all([
-        fetch('/api/visitors?registered=true'),
-        fetch('/api/reminders'),
-        fetch('/api/settings'),
+        fetch('/api/visitors?registered=true', { headers }),
+        fetch('/api/reminders', { headers }),
+        fetch('/api/settings', { headers }),
       ]);
 
       if (visitorsRes.ok) setRegisteredVisitors(await visitorsRes.json());
@@ -253,8 +259,8 @@ export default function PatientMirror() {
             }
           });
 
-          // Match condition: Distance < 0.65
-          if (bestMatch && minDistance < 0.65) {
+          // Strict L2 face distance match condition: Distance < 0.42 (Stops false matches!)
+          if (bestMatch && minDistance < 0.42) {
             setRecognizedPerson(bestMatch);
             setIsUnknownPresent(false);
             setDetectionDistance(minDistance.toFixed(2));
@@ -417,10 +423,12 @@ export default function PatientMirror() {
 
       const photoThumbnail = canvas.toDataURL('image/jpeg', 0.75);
       const dummyDescriptor = Array.from({ length: 128 }, () => (Math.random() - 0.5) * 0.1);
+      const userId = localStorage.getItem('mb_userId');
 
       // Emit Real-Time Socket Event to Caregiver Portal
       if (socketRef.current) {
         socketRef.current.emit('UNKNOWN_VISITOR_EVENT', {
+          userId,
           photoThumbnail,
           faceDescriptor: liveDescriptor || dummyDescriptor,
           cameraId: 'patient_mirror_1',
@@ -431,8 +439,12 @@ export default function PatientMirror() {
       // REST API Backup Post
       const res = await fetch('/api/visitors/unknown', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(userId ? { 'x-user-id': userId } : {}),
+        },
         body: JSON.stringify({
+          userId,
           photoThumbnail,
           faceDescriptor: liveDescriptor || dummyDescriptor,
         }),
