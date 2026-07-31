@@ -616,9 +616,29 @@ app.all('*', async (req, res) => {
     }
   }
 
+  if (urlPath.includes('/settings')) {
+    const familyCode = getFamilyCode(req);
+    return res.json({ nativeLanguage: 'hi-IN', familyCode: familyCode || 'MB-1001' });
+  }
+
   if (urlPath.includes('/tts/stream')) {
-    const { handleTtsStream } = require('../server/routes/ttsRoutes');
-    return handleTtsStream(req, res);
+    const text = req.query.text || '';
+    const lang = req.query.lang || 'hi';
+    if (!text) return res.status(400).json({ error: 'Text is required' });
+
+    const googleTtsUrl = `https://translate.google.com/translate_tts?ie=UTF-8&q=${encodeURIComponent(text)}&tl=${lang.split('-')[0]}&client=tw-ob`;
+    const https = require('https');
+    https.get(googleTtsUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      }
+    }, (stream) => {
+      res.set('Content-Type', 'audio/mpeg');
+      stream.pipe(res);
+    }).on('error', (err) => {
+      res.status(500).json({ error: 'TTS stream failed' });
+    });
+    return;
   }
 
   if (urlPath.includes('/health')) {
