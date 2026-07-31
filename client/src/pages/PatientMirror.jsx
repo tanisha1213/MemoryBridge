@@ -59,6 +59,7 @@ export default function PatientMirror() {
   const lastUnknownCaptureTimeRef = useRef(0);
   const activeRecognizedUserRef = useRef(null); // Currently recognized person ID
   const spokenUserRef = useRef(null); // Prevents duplicate audio repeats per encounter
+  const isSpeakingRef = useRef(false); // Strict single-speech execution lock
   const unknownFrameCounterRef = useRef(0); // How many consecutive unknown frames
   const isSnapshotLockedRef = useRef(false); // Prevents taking duplicate photos
   const snapshotCooldownTimerRef = useRef(null);
@@ -376,7 +377,7 @@ export default function PatientMirror() {
             setRecognizedPerson(bestMatch);
             setIsUnknownPresent(false);
             setDetectionDistance(minDistance.toFixed(2));
-            speakMemoryCue(bestMatch);
+            speakRecognition(bestMatch, currentLang);
           } else {
             setRecognizedPerson(bestMatch);
             setIsUnknownPresent(false);
@@ -408,7 +409,7 @@ export default function PatientMirror() {
         // Trigger unknown snapshot only after 3 consecutive unknown frames (~3 seconds)
         if (unknownFrameCounterRef.current >= 3 && !isSnapshotLockedRef.current) {
           isSnapshotLockedRef.current = true; // Synchronous Lockout BEFORE Vercel API network call fires!
-          speakUnknownAnnouncement();
+          speakUnknownAlert(currentLang);
           captureAndPostUnknownVisitor(Array.from(liveDescriptor), liveOutfitVector, false);
 
           if (snapshotCooldownTimerRef.current) clearTimeout(snapshotCooldownTimerRef.current);
@@ -463,48 +464,104 @@ export default function PatientMirror() {
     }
   }, []);
 
-  // Helper to select best matching browser voice for native language
-  const getVoiceForLanguage = (langCode) => {
+  // 1. High-Quality Neural Voice Selector
+  const getBestVoice = (langCode) => {
     if (!('speechSynthesis' in window)) return null;
     const voices = window.speechSynthesis.getVoices();
-    if (!voices || voices.length === 0) return null;
+    if (!voices || !voices.length) return null;
 
-    const primaryLang = langCode.split('-')[0].toLowerCase();
+    const targetClean = langCode.replace('_', '-').toLowerCase();
+    const primaryPrefix = targetClean.split('-')[0];
 
-    // 1. Natural / Native Quality match
+    // Filter for exact language + neural/natural voice names
     let match = voices.find(
       (v) =>
-        (v.lang.toLowerCase() === langCode.toLowerCase() || v.lang.toLowerCase().replace('_', '-') === langCode.toLowerCase()) &&
-        (v.name.includes('Google') || v.name.includes('Natural') || v.name.includes('India') || v.name.includes('Hemant') || v.name.includes('Kalpana'))
+        v.lang.replace('_', '-').toLowerCase() === targetClean &&
+        (v.name.includes('Google') ||
+          v.name.includes('Natural') ||
+          v.name.includes('Online') ||
+          v.name.includes('Neural') ||
+          v.name.includes('Swara') ||
+          v.name.includes('Madhur') ||
+          v.name.includes('Hemant') ||
+          v.name.includes('Kalpana'))
     );
 
-    // 2. Exact match (e.g. hi-IN or hi_IN)
     if (!match) {
-      match = voices.find(
-        (v) => v.lang.toLowerCase() === langCode.toLowerCase() || v.lang.toLowerCase().replace('_', '-') === langCode.toLowerCase()
-      );
+      match = voices.find((v) => v.lang.replace('_', '-').toLowerCase() === targetClean);
     }
 
-    // 3. Name search for Hindi/Marathi
-    if (!match && (primaryLang === 'hi' || primaryLang === 'mr')) {
-      match = voices.find(
-        (v) =>
-          v.name.includes('हिन्दी') ||
-          v.name.toLowerCase().includes('hindi') ||
-          v.name.toLowerCase().includes('marathi') ||
-          v.name.toLowerCase().includes('hemant') ||
-          v.name.toLowerCase().includes('kalpana') ||
-          v.lang.toLowerCase().includes('hi') ||
-          v.lang.toLowerCase().includes('mr')
-      );
-    }
-
-    // 4. Prefix match
     if (!match) {
-      match = voices.find((v) => v.lang.toLowerCase().startsWith(primaryLang));
+      match = voices.find((v) => v.lang.toLowerCase().startsWith(primaryPrefix));
     }
 
     return match || null;
+  };
+
+  // 2. Strict Single-Speech Execution
+  const speakFluentText = (text, langCode = 'hi-IN') => {
+    if (!('speechSynthesis' in window) || !text) return;
+
+    // HARD CANCEL: Stop all existing and queued audio immediately to prevent double voices!
+    window.speechSynthesis.cancel();
+
+    setTimeout(() => {
+      const utterance = new SpeechSynthesisUtterance(text);
+      const bestVoice = getBestVoice(langCode);
+
+      if (bestVoice) {
+        utterance.voice = bestVoice;
+      }
+
+      utterance.lang = langCode;
+      utterance.rate = 0.85; // Natural human pace
+      utterance.pitch = 1.0;
+
+      utterance.onend = () => {
+        isSpeakingRef.current = false;
+      };
+      utterance.onerror = () => {
+        isSpeakingRef.current = false;
+      };
+
+      isSpeakingRef.current = true;
+      window.speechSynthesis.speak(utterance);
+    }, 50);
+  };
+
+  // 3. Grammatically Correct Multi-Lingual Messages
+  const speakRecognition = (visitor, selectedLang = currentLang) => {
+    if (!visitor) return;
+
+    // Prevent duplicate playback for the same person
+    if (spokenUserRef.current === visitor._id) return;
+    spokenUserRef.current = visitor._id;
+
+    const relationship = getLocalizedRelationship(visitor.relationship, selectedLang) || 'परिचित';
+
+    if (selectedLang === 'hi-IN') {
+      // Grammatically correct, natural Hindi
+      speakFluentText(`नमस्ते। यह आपके ${relationship}, ${visitor.name} हैं।`, 'hi-IN');
+    } else if (selectedLang === 'mr-IN') {
+      // Grammatically correct, natural Marathi
+      speakFluentText(`नमस्कार. हे तुमचे ${relationship}, ${visitor.name} आहेत।`, 'mr-IN');
+    } else {
+      // English
+      speakFluentText(`Hello. This is your ${relationship}, ${visitor.name}.`, 'en-IN');
+    }
+  };
+
+  const speakUnknownAlert = (selectedLang = currentLang) => {
+    if (spokenUserRef.current === 'UNKNOWN_ALERT') return;
+    spokenUserRef.current = 'UNKNOWN_ALERT';
+
+    if (selectedLang === 'hi-IN') {
+      speakFluentText('एक नए व्यक्ति आए हैं। देखभाल करने वाले को सूचना भेज दी गई है।', 'hi-IN');
+    } else if (selectedLang === 'mr-IN') {
+      speakFluentText('एक नवीन व्यक्ती आली आहे. काळजीवाहू व्यक्तीस माहिती पाठवली आहे।', 'mr-IN');
+    } else {
+      speakFluentText('A visitor has arrived. A notification has been sent to your caregiver.', 'en-IN');
+    }
   };
 
   const handleLanguageChange = (newLang) => {
@@ -522,139 +579,17 @@ export default function PatientMirror() {
       body: JSON.stringify({ userId, nativeLanguage: newLang }),
     }).catch(() => {});
 
-    lastSpokenTimeRef.current = 0;
-    lastUnknownSpokenTimeRef.current = 0;
-
-    // If a person is currently recognized, re-announce memory cue in new language immediately!
+    spokenUserRef.current = null;
     if (recognizedPerson) {
-      speakMemoryCue(recognizedPerson);
+      speakRecognition(recognizedPerson, newLang);
     } else {
-      hasCapturedForCurrentUnknownRef.current = false;
-      if ('speechSynthesis' in window) {
-        window.speechSynthesis.cancel();
-        setTimeout(() => {
-          const phrases = {
-            'en-US': 'Language set to English',
-            'hi-IN': 'भाषा हिंदी में सेट की गई है',
-            'mr-IN': 'भाषा मराठीमध्ये सेट केली आहे',
-            'bn-IN': 'ভাষা বাংলায় সেট করা হয়েছে',
-            'ta-IN': 'மொழி தமிழில் அமைக்கப்பட்டது',
-            'te-IN': 'భాష తెలుగులో సెట్ చేయబడింది',
-            'gu-IN': 'ભાષા ગુજરાતીમાં સેટ થઈ છે',
-            'kn-IN': 'ಭಾಷೆ ಕನ್ನಡದಲ್ಲಿ ಹೊಂದಿಸಲಾಗಿದೆ',
-            'es-ES': 'Idioma configurado en español',
-          };
-          const textToSpeak = phrases[newLang] || 'Language updated';
-          const utterance = new SpeechSynthesisUtterance(textToSpeak);
-          utterance.lang = newLang;
-          utterance.volume = 1.0;
-          utterance.rate = 0.88;
-
-          const matchedVoice = getVoiceForLanguage(newLang);
-          if (matchedVoice) utterance.voice = matchedVoice;
-
-          window.speechSynthesis.speak(utterance);
-        }, 100);
-      }
+      const phrases = {
+        'en-US': 'Language set to English',
+        'hi-IN': 'भाषा हिंदी में सेट की गई है',
+        'mr-IN': 'भाषा मराठीमध्ये सेट केली आहे',
+      };
+      speakFluentText(phrases[newLang] || 'Language updated', newLang);
     }
-  };
-
-  // Multilingual SpeechSynthesis for RECOGNIZED Visitor with Bilingual Speech Chunking
-  const speakMemoryCue = (person) => {
-    if (!('speechSynthesis' in window)) return;
-
-    // STRICT CHECK: IF THIS PERSON WAS ALREADY SPOKEN TO, DO NOT REPEAT!
-    if (spokenUserRef.current === person._id) return;
-    spokenUserRef.current = person._id;
-
-    if (
-      lastSpokenPersonIdRef.current === person._id &&
-      spokenCountRef.current >= 2
-    ) {
-      return; // Stop speaking after 2 times!
-    }
-
-    if (lastSpokenPersonIdRef.current !== person._id) {
-      spokenCountRef.current = 0;
-    }
-
-    lastSpokenPersonIdRef.current = person._id;
-    spokenCountRef.current += 1;
-    lastSpokenTimeRef.current = Date.now();
-
-    window.speechSynthesis.cancel();
-
-    setTimeout(() => {
-      const relLocalized = getLocalizedRelationship(person.relationship, currentLang);
-      const primaryLang = currentLang.split('-')[0].toLowerCase();
-
-      if (primaryLang === 'hi' || primaryLang === 'mr') {
-        // Chunk 1: Native Hindi/Marathi Greeting with Native Voice
-        const greetingText = `यह आपके ${relLocalized}, ${person.name} हैं।`;
-        const greetingUttr = new SpeechSynthesisUtterance(greetingText);
-        greetingUttr.lang = currentLang;
-        greetingUttr.rate = 0.88;
-        const nativeVoice = getVoiceForLanguage(currentLang);
-        if (nativeVoice) greetingUttr.voice = nativeVoice;
-        window.speechSynthesis.speak(greetingUttr);
-
-        // Chunk 2: English Context Note (if present) spoken with Indian English voice to prevent phonetic distortion
-        if (person.contextNote && person.contextNote.trim().length > 0) {
-          const engNoteUttr = new SpeechSynthesisUtterance(person.contextNote);
-          engNoteUttr.lang = 'en-IN';
-          engNoteUttr.rate = 0.95;
-          const engVoice = getVoiceForLanguage('en-IN') || getVoiceForLanguage('en-US');
-          if (engVoice) engNoteUttr.voice = engVoice;
-          window.speechSynthesis.speak(engNoteUttr);
-        }
-      } else {
-        const noteLocalized = getLocalizedContextNote(person.contextNote || '', currentLang);
-        const textToSpeak = t('recognizedAudio', {
-          relationship: relLocalized,
-          name: person.name,
-          contextNote: noteLocalized,
-        });
-
-        const utterance = new SpeechSynthesisUtterance(textToSpeak);
-        utterance.lang = currentLang;
-        utterance.volume = 1.0;
-        utterance.rate = 0.88;
-
-        const matchedVoice = getVoiceForLanguage(currentLang);
-        if (matchedVoice) utterance.voice = matchedVoice;
-
-        window.speechSynthesis.speak(utterance);
-      }
-    }, 80);
-  };
-
-  // Multilingual SpeechSynthesis for UNRECOGNIZED Visitor (Spoken max 2 times per encounter)
-  const speakUnknownAnnouncement = () => {
-    if (!('speechSynthesis' in window)) return;
-
-    // STRICT CHECK: PREVENT REPEATED UNKNOWN ALERTS
-    if (spokenUserRef.current === 'UNKNOWN_VISITOR') return;
-    spokenUserRef.current = 'UNKNOWN_VISITOR';
-
-    if (spokenCountRef.current >= 2) return; // Stop speaking after 2 times!
-
-    spokenCountRef.current += 1;
-    lastUnknownSpokenTimeRef.current = Date.now();
-
-    window.speechSynthesis.cancel();
-
-    setTimeout(() => {
-      const textToSpeak = t('unrecognizedAudio');
-      const utterance = new SpeechSynthesisUtterance(textToSpeak);
-      utterance.lang = currentLang;
-      utterance.volume = 1.0;
-      utterance.rate = 0.88;
-
-      const matchedVoice = getVoiceForLanguage(currentLang);
-      if (matchedVoice) utterance.voice = matchedVoice;
-
-      window.speechSynthesis.speak(utterance);
-    }, 80);
   };
 
   // Capture Base64 frame snapshot & Emit Socket.io UNKNOWN_VISITOR_EVENT
