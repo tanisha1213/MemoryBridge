@@ -340,6 +340,12 @@ export default function PatientMirror() {
   const handleLanguageChange = (newLang) => {
     setCurrentLang(newLang);
     localStorage.setItem('mb_nativeLanguage', newLang);
+
+    // Reset capture & speech locks so changing language re-triggers capture & announcement in the new language!
+    hasCapturedForCurrentUnknownRef.current = false;
+    lastUnknownSpokenTimeRef.current = 0;
+    lastSpokenTimeRef.current = 0;
+
     showToast(`🌐 Language set to ${TRANSLATIONS[newLang]?.label}`);
 
     const userId = localStorage.getItem('mb_userId');
@@ -382,7 +388,7 @@ export default function PatientMirror() {
     const now = Date.now();
     if (
       lastSpokenPersonIdRef.current === person._id &&
-      now - lastSpokenTimeRef.current < 15000
+      now - lastSpokenTimeRef.current < 8000
     ) {
       return;
     }
@@ -418,7 +424,7 @@ export default function PatientMirror() {
     if (!('speechSynthesis' in window)) return;
 
     const now = Date.now();
-    if (now - lastUnknownSpokenTimeRef.current < 20000) return;
+    if (now - lastUnknownSpokenTimeRef.current < 5000) return;
     lastUnknownSpokenTimeRef.current = now;
 
     window.speechSynthesis.cancel();
