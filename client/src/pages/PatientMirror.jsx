@@ -521,7 +521,7 @@ export default function PatientMirror() {
     }
   };
 
-  // Multilingual SpeechSynthesis for RECOGNIZED Visitor (Spoken max 2 times per encounter)
+  // Multilingual SpeechSynthesis for RECOGNIZED Visitor with Bilingual Speech Chunking
   const speakMemoryCue = (person) => {
     if (!('speechSynthesis' in window)) return;
 
@@ -544,23 +544,45 @@ export default function PatientMirror() {
 
     setTimeout(() => {
       const relLocalized = getLocalizedRelationship(person.relationship, currentLang);
-      const noteLocalized = getLocalizedContextNote(person.contextNote || '', currentLang);
+      const primaryLang = currentLang.split('-')[0].toLowerCase();
 
-      const textToSpeak = t('recognizedAudio', {
-        relationship: relLocalized,
-        name: person.name,
-        contextNote: noteLocalized,
-      });
+      if (primaryLang === 'hi' || primaryLang === 'mr') {
+        // Chunk 1: Native Hindi/Marathi Greeting with Native Voice
+        const greetingText = `यह आपके ${relLocalized}, ${person.name} हैं।`;
+        const greetingUttr = new SpeechSynthesisUtterance(greetingText);
+        greetingUttr.lang = currentLang;
+        greetingUttr.rate = 0.88;
+        const nativeVoice = getVoiceForLanguage(currentLang);
+        if (nativeVoice) greetingUttr.voice = nativeVoice;
+        window.speechSynthesis.speak(greetingUttr);
 
-      const utterance = new SpeechSynthesisUtterance(textToSpeak);
-      utterance.lang = currentLang;
-      utterance.volume = 1.0;
-      utterance.rate = 0.85;
+        // Chunk 2: English Context Note (if present) spoken with Indian English voice to prevent phonetic distortion
+        if (person.contextNote && person.contextNote.trim().length > 0) {
+          const engNoteUttr = new SpeechSynthesisUtterance(person.contextNote);
+          engNoteUttr.lang = 'en-IN';
+          engNoteUttr.rate = 0.95;
+          const engVoice = getVoiceForLanguage('en-IN') || getVoiceForLanguage('en-US');
+          if (engVoice) engNoteUttr.voice = engVoice;
+          window.speechSynthesis.speak(engNoteUttr);
+        }
+      } else {
+        const noteLocalized = getLocalizedContextNote(person.contextNote || '', currentLang);
+        const textToSpeak = t('recognizedAudio', {
+          relationship: relLocalized,
+          name: person.name,
+          contextNote: noteLocalized,
+        });
 
-      const matchedVoice = getVoiceForLanguage(currentLang);
-      if (matchedVoice) utterance.voice = matchedVoice;
+        const utterance = new SpeechSynthesisUtterance(textToSpeak);
+        utterance.lang = currentLang;
+        utterance.volume = 1.0;
+        utterance.rate = 0.85;
 
-      window.speechSynthesis.speak(utterance);
+        const matchedVoice = getVoiceForLanguage(currentLang);
+        if (matchedVoice) utterance.voice = matchedVoice;
+
+        window.speechSynthesis.speak(utterance);
+      }
     }, 80);
   };
 
@@ -580,7 +602,7 @@ export default function PatientMirror() {
       const utterance = new SpeechSynthesisUtterance(textToSpeak);
       utterance.lang = currentLang;
       utterance.volume = 1.0;
-      utterance.rate = 0.85;
+      utterance.rate = 0.88;
 
       const matchedVoice = getVoiceForLanguage(currentLang);
       if (matchedVoice) utterance.voice = matchedVoice;
