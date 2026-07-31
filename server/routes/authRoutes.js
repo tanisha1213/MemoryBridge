@@ -57,7 +57,11 @@ router.post('/register', async (req, res) => {
         global._memoryBridgeUsers.unshift(newUser.toObject());
         return res.status(201).json(newUser);
       } catch (dbErr) {
-        console.warn('MongoDB register user error, falling back to memory:', dbErr.message);
+        console.warn('MongoDB register user error:', dbErr.message);
+        if (dbErr.code === 11000) {
+          return res.status(400).json({ error: 'An account with this email already exists' });
+        }
+        return res.status(400).json({ error: dbErr.message || 'Failed to register account' });
       }
     }
 

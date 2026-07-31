@@ -121,10 +121,24 @@ const handleAuthRegister = async (req, res) => {
 
   if (isDbConnected()) {
     try {
+      const existing = await User.findOne({ email: cleanEmail });
+      if (existing) {
+        return res.status(400).json({ error: 'An account with this email already exists' });
+      }
       const newUser = new User({ email: cleanEmail, password, patientName: patientName || 'Elder Patient', accessCode, nativeLanguage: nativeLanguage || 'en-US' });
       await newUser.save();
       return res.status(201).json(newUser);
-    } catch (e) {}
+    } catch (e) {
+      if (e.code === 11000) {
+        return res.status(400).json({ error: 'An account with this email already exists' });
+      }
+      return res.status(400).json({ error: e.message || 'Failed to register account' });
+    }
+  }
+
+  const existingMem = global._memoryBridgeUsers.find((u) => u.email === cleanEmail);
+  if (existingMem) {
+    return res.status(400).json({ error: 'An account with this email already exists' });
   }
 
   const newUser = { _id: 'usr_' + Date.now(), email: cleanEmail, password, patientName: patientName || 'Elder Patient', accessCode, nativeLanguage: nativeLanguage || 'en-US' };
