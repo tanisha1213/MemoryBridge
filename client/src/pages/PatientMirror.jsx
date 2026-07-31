@@ -291,10 +291,10 @@ export default function PatientMirror() {
           } catch (e) {}
         }
 
-        // IF NO FACE DETECTED: Do NOT wipe state on single frame dropouts! Require 6 consecutive absent frames (~3 seconds)
+        // IF NO FACE DETECTED: Reset after 3 consecutive missed frames (~1.5s)
         if (!detection) {
           noFaceFramesCountRef.current += 1;
-          if (noFaceFramesCountRef.current >= 6) {
+          if (noFaceFramesCountRef.current >= 3) {
             unknownFrameCounterRef.current = 0;
             activeRecognizedUserRef.current = null;
             isSnapshotLockedRef.current = false;
@@ -340,10 +340,9 @@ export default function PatientMirror() {
         });
 
         // =========================================================
-        // 🟢 CASE A: FACE IS RECOGNIZED (Distance < 0.58)
+        // 🟢 CASE A: STRICT FACE RECOGNITION MATCH (Distance < 0.48)
         // =========================================================
-        if (bestMatch && (minDistance < 0.58 || activeRecognizedUserRef.current === bestMatch._id)) {
-          // Reset unknown counter and unlock snapshots for when this person leaves
+        if (bestMatch && minDistance < 0.48) {
           unknownFrameCounterRef.current = 0;
 
           if (activeRecognizedUserRef.current !== bestMatch._id) {
@@ -361,30 +360,19 @@ export default function PatientMirror() {
         }
 
         // =========================================================
-        // 🔴 CASE B: POTENTIAL UNKNOWN FACE (Distance >= 0.58)
+        // 🔴 CASE B: UNKNOWN FACE DETECTED (Distance >= 0.48)
         // =========================================================
+        // Clear any old recognition lock immediately for unrecognised face
+        activeRecognizedUserRef.current = null;
+        setRecognizedPerson(null);
+        setIsUnknownPresent(true);
+        setDetectionDistance(null);
 
-        // If we ALREADY recognized this person previously in session, IGNORE head turns & movement flickers!
-        if (activeRecognizedUserRef.current !== null) {
-          unknownFrameCounterRef.current += 1;
-
-          // Require 8 consecutive unknown frames (~4 seconds) before releasing the active recognition lock
-          if (unknownFrameCounterRef.current < 8) {
-            return;
-          } else {
-            activeRecognizedUserRef.current = null;
-          }
-        }
-
-        // If truly UNKNOWN and not snapshot-locked, increment unknown counter
         unknownFrameCounterRef.current += 1;
 
-        // ONLY TAKE SNAPSHOT AFTER 4 CONSECUTIVE UNKNOWN FRAMES (~4 Seconds) AND WHEN NOT LOCKED
-        if (unknownFrameCounterRef.current >= 4 && !isSnapshotLockedRef.current) {
-          isSnapshotLockedRef.current = true; // Lock taking further photos until person leaves frame!
-          setRecognizedPerson(null);
-          setIsUnknownPresent(true);
-          setDetectionDistance(null);
+        // ONLY TAKE SNAPSHOT AFTER 3 CONSECUTIVE UNKNOWN FRAMES (~3 Seconds) AND WHEN NOT LOCKED
+        if (unknownFrameCounterRef.current >= 3 && !isSnapshotLockedRef.current) {
+          isSnapshotLockedRef.current = true; // Lock further snapshots until person leaves frame!
           captureAndPostUnknownVisitor(Array.from(liveDescriptor), liveOutfitVector, false);
           speakUnknownAnnouncement();
         }
