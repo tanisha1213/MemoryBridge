@@ -60,10 +60,10 @@ const Reminder = mongoose.models.Reminder || mongoose.model('Reminder', reminder
 
 let cachedConn = null;
 async function connectDB() {
-  if (mongoose.connection.readyState >= 1) return;
+  if (mongoose.connection && mongoose.connection.readyState === 1) return mongoose.connection;
   if (!cachedConn) {
     cachedConn = mongoose.connect(MONGODB_URI, {
-      serverSelectionTimeoutMS: 3500,
+      serverSelectionTimeoutMS: 2000,
     }).catch((err) => {
       cachedConn = null;
     });
@@ -71,10 +71,10 @@ async function connectDB() {
   return cachedConn;
 }
 
-const isDbConnected = () => mongoose.connection.readyState === 1;
+const isDbConnected = () => mongoose.connection && mongoose.connection.readyState === 1;
 
-app.use(async (req, res, next) => {
-  try { await connectDB(); } catch (e) {}
+app.use((req, res, next) => {
+  connectDB().catch(() => {});
   next();
 });
 
@@ -524,7 +524,10 @@ const handleRecognizeAndSnapshotPost = async (req, res) => {
 
 app.all('*', async (req, res) => {
   try {
-    await connectDB().catch(() => {});
+    await Promise.race([
+      connectDB(),
+      new Promise((resolve) => setTimeout(resolve, 1500))
+    ]);
   } catch (e) {}
 
   const urlPath = req.path || req.url || '';
