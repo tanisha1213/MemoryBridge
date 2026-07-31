@@ -56,8 +56,9 @@ export default function PatientMirror() {
   const lastSpokenTimeRef = useRef(0);
   const lastUnknownSpokenTimeRef = useRef(0);
   const lastUnknownCaptureTimeRef = useRef(0);
-  const hasCapturedForCurrentUnknownRef = useRef(false);
   const isCooldownRef = useRef(false); // 30-second cooldown lock to prevent snapshot flooding
+  const trackSessionLockRef = useRef(false); // Session-based track lock
+  const lastTrackedBoxRef = useRef(null); // IoU Person Bounding Box Tracker
   const spokenCountRef = useRef(0);
   const noFaceFramesCountRef = useRef(0);
   const isProcessingFrameRef = useRef(false);
@@ -67,6 +68,67 @@ export default function PatientMirror() {
   const showToast = (msg) => {
     setToastMessage(msg);
     setTimeout(() => setToastMessage(null), 5000);
+  };
+
+  // COMPUTER VISION: Torso Bounding Box & Outfit Color Feature Extraction
+  const extractOutfitColorVector = (video, faceBox) => {
+    try {
+      const videoW = video.videoWidth || 1280;
+      const videoH = video.videoHeight || 720;
+
+      const torsoX = Math.max(0, Math.floor(faceBox.x - faceBox.width * 0.2));
+      const torsoY = Math.min(videoH - 1, Math.floor(faceBox.y + faceBox.height));
+      const torsoW = Math.min(videoW - torsoX, Math.floor(faceBox.width * 1.4));
+      const torsoH = Math.min(videoH - torsoY, Math.floor(faceBox.height * 1.8));
+
+      if (torsoW <= 5 || torsoH <= 5) return [0.5, 0.5, 0.5];
+
+      const offCanvas = document.createElement('canvas');
+      offCanvas.width = 32;
+      offCanvas.height = 32;
+      const ctx = offCanvas.getContext('2d');
+      ctx.drawImage(video, torsoX, torsoY, torsoW, torsoH, 0, 0, 32, 32);
+
+      const imgData = ctx.getImageData(0, 0, 32, 32).data;
+      let rSum = 0, gSum = 0, bSum = 0, count = 0;
+      for (let i = 0; i < imgData.length; i += 4) {
+        rSum += imgData[i];
+        gSum += imgData[i + 1];
+        bSum += imgData[i + 2];
+        count++;
+      }
+
+      return count > 0
+        ? [
+            parseFloat((rSum / (count * 255)).toFixed(3)),
+            parseFloat((gSum / (count * 255)).toFixed(3)),
+            parseFloat((bSum / (count * 255)).toFixed(3)),
+          ]
+        : [0.5, 0.5, 0.5];
+    } catch (e) {
+      return [0.5, 0.5, 0.5];
+    }
+  };
+
+  // COMPUTER VISION: Outfit Color Vector Distance
+  const calcColorDistance = (vecA, vecB) => {
+    if (!vecA || !vecB || vecA.length !== 3 || vecB.length !== 3) return 0.5;
+    const rDiff = vecA[0] - vecB[0];
+    const gDiff = vecA[1] - vecB[1];
+    const bDiff = vecA[2] - vecB[2];
+    return Math.sqrt(rDiff * rDiff + gDiff * gDiff + bDiff * bDiff) / 1.732;
+  };
+
+  // COMPUTER VISION: Hybrid Matching Score = (Face Distance * 0.7) + (Outfit Distance * 0.3)
+  const calcHybridDistance = (liveFaceDesc, liveOutfitVec, visitor) => {
+    const savedFace = new Float32Array(visitor.faceDescriptor);
+    const faceDist = faceapi.euclideanDistance(liveFaceDesc, savedFace);
+
+    if (visitor.outfitVector && visitor.outfitVector.length === 3) {
+      const outfitDist = calcColorDistance(liveOutfitVec, visitor.outfitVector);
+      return faceDist * 0.7 + outfitDist * 0.3;
+    }
+    return faceDist;
   };
 
   // Socket.io Connection Setup
@@ -249,15 +311,17 @@ export default function PatientMirror() {
 
         if (detection) {
           noFaceFramesCountRef.current = 0;
+          lastTrackedBoxRef.current = detection.detection.box;
 
           const liveDescriptor = detection.descriptor;
+          const liveOutfitVector = extractOutfitColorVector(video, detection.detection.box);
+
           let bestMatch = null;
           let minDistance = 1.0;
 
           registeredVisitors.forEach((visitor) => {
             if (visitor.faceDescriptor && visitor.faceDescriptor.length === 128) {
-              const savedDescriptor = new Float32Array(visitor.faceDescriptor);
-              const dist = faceapi.euclideanDistance(liveDescriptor, savedDescriptor);
+              const dist = calcHybridDistance(liveDescriptor, liveOutfitVector, visitor);
               if (dist < minDistance) {
                 minDistance = dist;
                 bestMatch = visitor;
@@ -265,8 +329,8 @@ export default function PatientMirror() {
             }
           });
 
-          // Match threshold: If distance < 0.55, classify as recognized
-          if (bestMatch && minDistance < 0.55) {
+          // Match threshold: If Hybrid Distance < 0.62, classify as recognized
+          if (bestMatch && minDistance < 0.62) {
             setRecognizedPerson(bestMatch);
             setIsUnknownPresent(false);
             setDetectionDistance(minDistance.toFixed(2));
@@ -277,13 +341,13 @@ export default function PatientMirror() {
             setIsUnknownPresent(true);
             setDetectionDistance(null);
 
-            // Cooldown lock: Do NOT send HTTP POST request if isCooldownRef.current is true (30 seconds)
-            if (!isCooldownRef.current) {
+            // Session Lockout: Do NOT send HTTP POST request if trackSessionLockRef.current or isCooldownRef.current is true
+            if (!trackSessionLockRef.current && !isCooldownRef.current) {
+              trackSessionLockRef.current = true;
               isCooldownRef.current = true;
-              captureAndPostUnknownVisitor(Array.from(liveDescriptor), false);
+              captureAndPostUnknownVisitor(Array.from(liveDescriptor), liveOutfitVector, false);
               speakUnknownAnnouncement();
 
-              // Reset 30-second cooldown timer
               setTimeout(() => {
                 isCooldownRef.current = false;
               }, 30000);
@@ -295,7 +359,10 @@ export default function PatientMirror() {
           setIsUnknownPresent(false);
           setDetectionDistance(null);
 
+          // Clear track session lock ONLY when zero people detected for 10 consecutive frames (~5 seconds)
           if (noFaceFramesCountRef.current > 10) {
+            lastTrackedBoxRef.current = null;
+            trackSessionLockRef.current = false;
             spokenCountRef.current = 0;
             lastSpokenPersonIdRef.current = null;
           }
@@ -465,7 +532,7 @@ export default function PatientMirror() {
   };
 
   // Capture Base64 frame snapshot & Emit Socket.io UNKNOWN_VISITOR_EVENT
-  const captureAndPostUnknownVisitor = async (liveDescriptor = null, isManual = false) => {
+  const captureAndPostUnknownVisitor = async (liveDescriptor = null, liveOutfitVector = null, isManual = false) => {
     try {
       showToast(isManual ? '📸 Capturing manual snapshot...' : '📸 Unrecognized face detected! Capturing...');
 
@@ -513,6 +580,7 @@ export default function PatientMirror() {
           userId,
           photoThumbnail,
           faceDescriptor: liveDescriptor || dummyDescriptor,
+          outfitVector: liveOutfitVector || [],
           cameraId: 'patient_mirror_1',
           timestamp: new Date(),
         });
@@ -529,6 +597,7 @@ export default function PatientMirror() {
           userId,
           photoThumbnail,
           faceDescriptor: liveDescriptor || dummyDescriptor,
+          outfitVector: liveOutfitVector || [],
         }),
       });
 

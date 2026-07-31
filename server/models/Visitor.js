@@ -31,6 +31,10 @@ const visitorSchema = new mongoose.Schema(
       type: [Number],
       default: [],
     },
+    outfitVector: {
+      type: [Number],
+      default: [],
+    },
     photoThumbnail: {
       type: String,
       required: true,

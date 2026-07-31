@@ -100,7 +100,7 @@ router.get('/unknown', async (req, res) => {
 // POST /api/visitors/unknown - Log unrecognized face snapshot
 router.post('/unknown', async (req, res) => {
   try {
-    const { photoThumbnail, faceDescriptor } = req.body;
+    const { photoThumbnail, faceDescriptor, outfitVector } = req.body;
     const userId = getUserId(req);
 
     if (!photoThumbnail) {
@@ -113,6 +113,7 @@ router.post('/unknown', async (req, res) => {
       relationship: 'Unknown',
       contextNote: 'Captured by patient camera',
       faceDescriptor: faceDescriptor || [],
+      outfitVector: outfitVector || [],
       photoThumbnail,
       isRegistered: false,
       lastSeen: new Date(),
@@ -148,7 +149,7 @@ router.post('/unknown', async (req, res) => {
 // POST /api/visitors/register - Save or update registered visitor
 router.post('/register', async (req, res) => {
   try {
-    const { id, name, relationship, contextNote, faceDescriptor, photoThumbnail, preferredLanguage } = req.body;
+    const { id, name, relationship, contextNote, faceDescriptor, outfitVector, photoThumbnail, preferredLanguage } = req.body;
     const userId = getUserId(req);
 
     if (!name || !relationship) {
@@ -172,6 +173,7 @@ router.post('/register', async (req, res) => {
           visitor.contextNote = contextNote || '';
           if (preferredLanguage) visitor.preferredLanguage = preferredLanguage;
           if (faceDescriptor && faceDescriptor.length === 128) visitor.faceDescriptor = faceDescriptor;
+          if (outfitVector && outfitVector.length === 3) visitor.outfitVector = outfitVector;
           if (photoThumbnail) visitor.photoThumbnail = photoThumbnail;
           visitor.isRegistered = true;
           visitor.lastSeen = new Date();
@@ -196,8 +198,11 @@ router.post('/register', async (req, res) => {
             contextNote: contextNote || '',
             preferredLanguage: preferredLanguage || 'en-US',
             faceDescriptor: faceDescriptor || [],
+            outfitVector: outfitVector || [],
             photoThumbnail: photoThumbnail || '',
             isRegistered: true,
+            lastSeen: new Date(),
+          });
             lastSeen: new Date(),
           });
           await newVisitor.save();

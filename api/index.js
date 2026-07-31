@@ -182,7 +182,7 @@ const handleVisitorsGet = async (req, res) => {
 
 const handleUnknownPost = async (req, res) => {
   try {
-    const { photoThumbnail, faceDescriptor } = req.body;
+    const { photoThumbnail, faceDescriptor, outfitVector } = req.body;
     const userId = getUserId(req);
     if (!photoThumbnail) return res.status(400).json({ error: 'photoThumbnail required' });
 
@@ -192,6 +192,7 @@ const handleUnknownPost = async (req, res) => {
       relationship: 'Unknown',
       contextNote: 'Captured by patient camera',
       faceDescriptor: faceDescriptor || [],
+      outfitVector: outfitVector || [],
       photoThumbnail,
       isRegistered: false,
       lastSeen: new Date(),
@@ -216,7 +217,7 @@ const handleUnknownPost = async (req, res) => {
 
 const handleRegisterPost = async (req, res) => {
   try {
-    const { id, name, relationship, contextNote, faceDescriptor, photoThumbnail, preferredLanguage } = req.body;
+    const { id, name, relationship, contextNote, faceDescriptor, outfitVector, photoThumbnail, preferredLanguage } = req.body;
     const userId = getUserId(req);
 
     if (!name || !relationship) return res.status(400).json({ error: 'Name and Relationship required' });
@@ -234,6 +235,7 @@ const handleRegisterPost = async (req, res) => {
           visitor.contextNote = contextNote || '';
           if (preferredLanguage) visitor.preferredLanguage = preferredLanguage;
           if (faceDescriptor && faceDescriptor.length === 128) visitor.faceDescriptor = faceDescriptor;
+          if (outfitVector && outfitVector.length === 3) visitor.outfitVector = outfitVector;
           if (photoThumbnail) visitor.photoThumbnail = photoThumbnail;
           visitor.isRegistered = true;
           visitor.lastSeen = new Date();
@@ -254,6 +256,7 @@ const handleRegisterPost = async (req, res) => {
             contextNote: contextNote || '',
             preferredLanguage: preferredLanguage || 'en-US',
             faceDescriptor: faceDescriptor || [],
+            outfitVector: outfitVector || [],
             photoThumbnail: photoThumbnail || '',
             isRegistered: true,
             lastSeen: new Date(),

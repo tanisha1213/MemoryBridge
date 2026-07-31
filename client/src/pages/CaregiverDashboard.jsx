@@ -236,6 +236,7 @@ export default function CaregiverDashboard() {
         contextNote: formData.contextNote,
         preferredLanguage: formData.preferredLanguage,
         faceDescriptor: finalDescriptor || [],
+        outfitVector: selectedSnapshot.outfitVector || [],
         photoThumbnail: selectedSnapshot.photoThumbnail,
       };
 
