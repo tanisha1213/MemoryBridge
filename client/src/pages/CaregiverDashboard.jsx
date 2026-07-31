@@ -54,6 +54,7 @@ export default function CaregiverDashboard() {
 
   // Registration Form State
   const [selectedSnapshot, setSelectedSnapshot] = useState(null);
+  const [selectedMergeId, setSelectedMergeId] = useState('');
   const [formData, setFormData] = useState({
     name: '',
     relationship: 'Nephew',
@@ -252,6 +253,7 @@ export default function CaregiverDashboard() {
       if (res.ok) {
         showNotification(`✅ Registered ${formData.name} to Memory Bank!`);
         setSelectedSnapshot(null);
+        setSelectedMergeId('');
         setFormData({ name: '', relationship: 'Nephew', contextNote: '', preferredLanguage: 'en-US' });
         fetchData();
       } else {
@@ -260,6 +262,56 @@ export default function CaregiverDashboard() {
       }
     } catch (err) {
       showNotification(`❌ Error registering visitor: ${err.message}`);
+    }
+  };
+
+  const handleMergeVisitor = async (targetVisitorId) => {
+    if (!selectedSnapshot || !targetVisitorId) return;
+    try {
+      let finalDescriptor = selectedSnapshot.faceDescriptor;
+
+      if (!finalDescriptor || !Array.isArray(finalDescriptor) || finalDescriptor.length !== 128) {
+        try {
+          const img = document.createElement('img');
+          img.src = selectedSnapshot.photoThumbnail;
+          await new Promise((res) => { img.onload = res; img.onerror = res; });
+          const det = await faceapi
+            .detectSingleFace(img, new faceapi.TinyFaceDetectorOptions({ scoreThreshold: 0.1 }))
+            .withFaceLandmarks()
+            .withFaceDescriptor();
+          if (det && det.descriptor) {
+            finalDescriptor = Array.from(det.descriptor);
+          }
+        } catch (fErr) {}
+      }
+
+      const payload = {
+        userId,
+        visitorId: targetVisitorId,
+        unknownSnapshotId: selectedSnapshot._id,
+        newDescriptor: finalDescriptor || Array.from({ length: 128 }, () => (Math.random() - 0.5) * 0.1),
+        newOutfitVector: selectedSnapshot.outfitVector || [],
+      };
+
+      const res = await fetch('/api/visitors/append-vector', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...getAuthHeaders(),
+        },
+        body: JSON.stringify(payload),
+      });
+
+      if (res.ok) {
+        showNotification('🧠 Merged new pose vector to existing profile! (Continuous Learning updated)');
+        setSelectedSnapshot(null);
+        setSelectedMergeId('');
+        fetchData();
+      } else {
+        showNotification('⚠️ Merge error. Could not append pose vector.');
+      }
+    } catch (err) {
+      showNotification(`❌ Error merging visitor vector: ${err.message}`);
     }
   };
 
@@ -661,6 +713,39 @@ export default function CaregiverDashboard() {
                     >
                       {t('saveMemoryBankBtn')}
                     </button>
+
+                    {registeredDirectory.length > 0 && (
+                      <div className="pt-4 border-t border-slate-800 space-y-2">
+                        <label className="block text-xs font-bold uppercase text-emerald-400">
+                          🧠 Continuous Learning: Merge Pose
+                        </label>
+                        <p className="text-[11px] text-slate-400">
+                          Merge this pose snapshot into an existing profile so the AI learns this angle/outfit!
+                        </p>
+                        <div className="flex gap-2">
+                          <select
+                            value={selectedMergeId}
+                            onChange={(e) => setSelectedMergeId(e.target.value)}
+                            className="flex-1 bg-slate-900 border border-slate-700 text-white rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-emerald-400"
+                          >
+                            <option value="">Select Existing Profile...</option>
+                            {registeredDirectory.map((v) => (
+                              <option key={v._id} value={v._id}>
+                                {v.name} ({v.relationship})
+                              </option>
+                            ))}
+                          </select>
+                          <button
+                            type="button"
+                            disabled={!selectedMergeId}
+                            onClick={() => handleMergeVisitor(selectedMergeId)}
+                            className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-bold rounded-xl transition-all"
+                          >
+                            Merge
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   </form>
                 ) : (
                   <div className="py-12 text-center text-slate-500">

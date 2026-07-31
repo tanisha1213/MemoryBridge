@@ -309,7 +309,18 @@ export default function PatientMirror() {
         let minDistance = 1.0;
 
         registeredVisitors.forEach((visitor) => {
-          if (visitor.faceDescriptor && visitor.faceDescriptor.length === 128) {
+          if (visitor.faceDescriptors && Array.isArray(visitor.faceDescriptors) && visitor.faceDescriptors.length > 0) {
+            visitor.faceDescriptors.forEach((descriptorArray) => {
+              if (descriptorArray && descriptorArray.length === 128) {
+                const savedDescriptor = new Float32Array(descriptorArray);
+                const dist = faceapi.euclideanDistance(liveDescriptor, savedDescriptor);
+                if (dist < minDistance) {
+                  minDistance = dist;
+                  bestMatch = visitor;
+                }
+              }
+            });
+          } else if (visitor.faceDescriptor && visitor.faceDescriptor.length === 128) {
             const savedDescriptor = new Float32Array(visitor.faceDescriptor);
             const dist = faceapi.euclideanDistance(liveDescriptor, savedDescriptor);
             if (dist < minDistance) {

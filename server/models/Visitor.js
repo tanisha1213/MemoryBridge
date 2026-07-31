@@ -27,6 +27,15 @@ const visitorSchema = new mongoose.Schema(
       default: 'en-US',
       trim: true,
     },
+    familyCode: {
+      type: String,
+      default: 'MB-1001',
+      index: true,
+    },
+    faceDescriptors: {
+      type: [[Number]],
+      default: [],
+    },
     faceDescriptor: {
       type: [Number],
       default: [],

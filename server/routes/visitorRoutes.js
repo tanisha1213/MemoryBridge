@@ -146,10 +146,82 @@ router.post('/unknown', async (req, res) => {
   }
 });
 
+// POST /api/visitors/append-vector - Merge new 128-D vector to existing profile (Continuous Learning)
+router.post('/append-vector', async (req, res) => {
+  try {
+    const { visitorId, unknownSnapshotId, newDescriptor, newOutfitVector } = req.body;
+    const userId = getUserId(req);
+
+    if (!visitorId || !newDescriptor || newDescriptor.length !== 128) {
+      return res.status(400).json({ error: 'visitorId and valid 128-D newDescriptor are required' });
+    }
+
+    if (isDbConnected()) {
+      try {
+        const visitor = await Visitor.findById(visitorId);
+        if (visitor) {
+          if (!visitor.faceDescriptors) visitor.faceDescriptors = [];
+          if (visitor.faceDescriptor && visitor.faceDescriptor.length === 128 && visitor.faceDescriptors.length === 0) {
+            visitor.faceDescriptors.push(visitor.faceDescriptor);
+          }
+          visitor.faceDescriptors.push(newDescriptor);
+          visitor.faceDescriptor = newDescriptor;
+          if (newOutfitVector && newOutfitVector.length === 3) visitor.outfitVector = newOutfitVector;
+          visitor.lastSeen = new Date();
+          await visitor.save();
+
+          // Delete temporary unknown snapshot if provided
+          if (unknownSnapshotId) {
+            try {
+              await Visitor.findByIdAndDelete(unknownSnapshotId);
+            } catch (e) {}
+          }
+
+          global._memoryBridgeVisitors = global._memoryBridgeVisitors.filter(
+            (v) => String(v._id) !== String(unknownSnapshotId)
+          );
+          const idx = global._memoryBridgeVisitors.findIndex((v) => String(v._id) === String(visitorId));
+          if (idx !== -1) {
+            global._memoryBridgeVisitors[idx] = visitor.toObject();
+          }
+          saveLocalVisitors();
+
+          return res.json(visitor);
+        }
+      } catch (dbErr) {
+        console.warn('MongoDB append-vector error:', dbErr.message);
+      }
+    }
+
+    const idx = global._memoryBridgeVisitors.findIndex((v) => String(v._id) === String(visitorId));
+    if (idx !== -1) {
+      const item = global._memoryBridgeVisitors[idx];
+      if (!item.faceDescriptors) item.faceDescriptors = [];
+      item.faceDescriptors.push(newDescriptor);
+      item.faceDescriptor = newDescriptor;
+      if (newOutfitVector && newOutfitVector.length === 3) item.outfitVector = newOutfitVector;
+      item.lastSeen = new Date();
+
+      if (unknownSnapshotId) {
+        global._memoryBridgeVisitors = global._memoryBridgeVisitors.filter(
+          (v) => String(v._id) !== String(unknownSnapshotId)
+        );
+      }
+      saveLocalVisitors();
+      return res.json(item);
+    }
+
+    return res.status(404).json({ error: 'Registered visitor profile not found' });
+  } catch (error) {
+    console.error('Error appending vector:', error);
+    res.status(500).json({ error: 'Failed to merge pose vector to profile' });
+  }
+});
+
 // POST /api/visitors/register - Save or update registered visitor
 router.post('/register', async (req, res) => {
   try {
-    const { id, name, relationship, contextNote, faceDescriptor, outfitVector, photoThumbnail, preferredLanguage } = req.body;
+    const { id, name, relationship, contextNote, faceDescriptor, outfitVector, photoThumbnail, preferredLanguage, familyCode } = req.body;
     const userId = getUserId(req);
 
     if (!name || !relationship) {
@@ -168,11 +240,16 @@ router.post('/register', async (req, res) => {
 
         if (visitor) {
           if (userId) visitor.userId = userId;
+          if (familyCode) visitor.familyCode = familyCode;
           visitor.name = name;
           visitor.relationship = relationship;
           visitor.contextNote = contextNote || '';
           if (preferredLanguage) visitor.preferredLanguage = preferredLanguage;
-          if (faceDescriptor && faceDescriptor.length === 128) visitor.faceDescriptor = faceDescriptor;
+          if (faceDescriptor && faceDescriptor.length === 128) {
+            visitor.faceDescriptor = faceDescriptor;
+            if (!visitor.faceDescriptors) visitor.faceDescriptors = [];
+            visitor.faceDescriptors.push(faceDescriptor);
+          }
           if (outfitVector && outfitVector.length === 3) visitor.outfitVector = outfitVector;
           if (photoThumbnail) visitor.photoThumbnail = photoThumbnail;
           visitor.isRegistered = true;
@@ -191,18 +268,19 @@ router.post('/register', async (req, res) => {
 
           return res.json(visitor);
         } else {
+          const initialDescriptors = faceDescriptor && faceDescriptor.length === 128 ? [faceDescriptor] : [];
           const newVisitor = new Visitor({
             userId,
+            familyCode: familyCode || 'MB-1001',
             name,
             relationship,
             contextNote: contextNote || '',
             preferredLanguage: preferredLanguage || 'en-US',
             faceDescriptor: faceDescriptor || [],
+            faceDescriptors: initialDescriptors,
             outfitVector: outfitVector || [],
             photoThumbnail: photoThumbnail || '',
             isRegistered: true,
-            lastSeen: new Date(),
-          });
             lastSeen: new Date(),
           });
           await newVisitor.save();
@@ -230,7 +308,11 @@ router.post('/register', async (req, res) => {
       item.relationship = relationship;
       item.contextNote = contextNote || '';
       if (preferredLanguage) item.preferredLanguage = preferredLanguage;
-      if (faceDescriptor && faceDescriptor.length === 128) item.faceDescriptor = faceDescriptor;
+      if (faceDescriptor && faceDescriptor.length === 128) {
+        item.faceDescriptor = faceDescriptor;
+        if (!item.faceDescriptors) item.faceDescriptors = [];
+        item.faceDescriptors.push(faceDescriptor);
+      }
       if (photoThumbnail) item.photoThumbnail = photoThumbnail;
       item.isRegistered = true;
       item.updatedAt = new Date();
@@ -240,11 +322,13 @@ router.post('/register', async (req, res) => {
       const newVisitor = {
         _id: 'mem_' + Date.now() + '_' + Math.random().toString(36).substr(2, 4),
         userId,
+        familyCode: familyCode || 'MB-1001',
         name,
         relationship,
         contextNote: contextNote || '',
         preferredLanguage: preferredLanguage || 'en-US',
         faceDescriptor: faceDescriptor || [],
+        faceDescriptors: faceDescriptor && faceDescriptor.length === 128 ? [faceDescriptor] : [],
         photoThumbnail: photoThumbnail || '',
         isRegistered: true,
         lastSeen: new Date(),

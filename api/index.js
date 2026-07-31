@@ -215,9 +215,70 @@ const handleUnknownPost = async (req, res) => {
   }
 };
 
+const handleAppendVectorPost = async (req, res) => {
+  try {
+    const { visitorId, unknownSnapshotId, newDescriptor, newOutfitVector } = req.body;
+    if (!visitorId || !newDescriptor || newDescriptor.length !== 128) {
+      return res.status(400).json({ error: 'visitorId and valid 128-D newDescriptor are required' });
+    }
+
+    if (isDbConnected()) {
+      try {
+        const visitor = await Visitor.findById(visitorId);
+        if (visitor) {
+          if (!visitor.faceDescriptors) visitor.faceDescriptors = [];
+          if (visitor.faceDescriptor && visitor.faceDescriptor.length === 128 && visitor.faceDescriptors.length === 0) {
+            visitor.faceDescriptors.push(visitor.faceDescriptor);
+          }
+          visitor.faceDescriptors.push(newDescriptor);
+          visitor.faceDescriptor = newDescriptor;
+          if (newOutfitVector && newOutfitVector.length === 3) visitor.outfitVector = newOutfitVector;
+          visitor.lastSeen = new Date();
+          await visitor.save();
+
+          if (unknownSnapshotId) {
+            try {
+              await Visitor.findByIdAndDelete(unknownSnapshotId);
+            } catch (e) {}
+          }
+
+          global._memoryBridgeVisitors = global._memoryBridgeVisitors.filter(
+            (v) => String(v._id) !== String(unknownSnapshotId)
+          );
+          const idx = global._memoryBridgeVisitors.findIndex((v) => String(v._id) === String(visitorId));
+          if (idx !== -1) global._memoryBridgeVisitors[idx] = visitor.toObject();
+
+          return res.json(visitor);
+        }
+      } catch (e) {}
+    }
+
+    const idx = global._memoryBridgeVisitors.findIndex((v) => String(v._id) === String(visitorId));
+    if (idx !== -1) {
+      const item = global._memoryBridgeVisitors[idx];
+      if (!item.faceDescriptors) item.faceDescriptors = [];
+      item.faceDescriptors.push(newDescriptor);
+      item.faceDescriptor = newDescriptor;
+      if (newOutfitVector && newOutfitVector.length === 3) item.outfitVector = newOutfitVector;
+      item.lastSeen = new Date();
+
+      if (unknownSnapshotId) {
+        global._memoryBridgeVisitors = global._memoryBridgeVisitors.filter(
+          (v) => String(v._id) !== String(unknownSnapshotId)
+        );
+      }
+      return res.json(item);
+    }
+
+    return res.status(404).json({ error: 'Visitor profile not found' });
+  } catch (err) {
+    return res.status(500).json({ error: err.message || 'Failed to append vector' });
+  }
+};
+
 const handleRegisterPost = async (req, res) => {
   try {
-    const { id, name, relationship, contextNote, faceDescriptor, outfitVector, photoThumbnail, preferredLanguage } = req.body;
+    const { id, name, relationship, contextNote, faceDescriptor, outfitVector, photoThumbnail, preferredLanguage, familyCode } = req.body;
     const userId = getUserId(req);
 
     if (!name || !relationship) return res.status(400).json({ error: 'Name and Relationship required' });
@@ -230,11 +291,16 @@ const handleRegisterPost = async (req, res) => {
 
         if (visitor) {
           if (userId) visitor.userId = userId;
+          if (familyCode) visitor.familyCode = familyCode;
           visitor.name = name;
           visitor.relationship = relationship;
           visitor.contextNote = contextNote || '';
           if (preferredLanguage) visitor.preferredLanguage = preferredLanguage;
-          if (faceDescriptor && faceDescriptor.length === 128) visitor.faceDescriptor = faceDescriptor;
+          if (faceDescriptor && faceDescriptor.length === 128) {
+            visitor.faceDescriptor = faceDescriptor;
+            if (!visitor.faceDescriptors) visitor.faceDescriptors = [];
+            visitor.faceDescriptors.push(faceDescriptor);
+          }
           if (outfitVector && outfitVector.length === 3) visitor.outfitVector = outfitVector;
           if (photoThumbnail) visitor.photoThumbnail = photoThumbnail;
           visitor.isRegistered = true;
@@ -249,13 +315,16 @@ const handleRegisterPost = async (req, res) => {
 
           return res.json(visitor);
         } else {
+          const initialDescriptors = faceDescriptor && faceDescriptor.length === 128 ? [faceDescriptor] : [];
           const newVisitor = new Visitor({
             userId,
+            familyCode: familyCode || 'MB-1001',
             name,
             relationship,
             contextNote: contextNote || '',
             preferredLanguage: preferredLanguage || 'en-US',
             faceDescriptor: faceDescriptor || [],
+            faceDescriptors: initialDescriptors,
             outfitVector: outfitVector || [],
             photoThumbnail: photoThumbnail || '',
             isRegistered: true,
@@ -281,7 +350,11 @@ const handleRegisterPost = async (req, res) => {
       item.relationship = relationship;
       item.contextNote = contextNote || '';
       if (preferredLanguage) item.preferredLanguage = preferredLanguage;
-      if (faceDescriptor && faceDescriptor.length === 128) item.faceDescriptor = faceDescriptor;
+      if (faceDescriptor && faceDescriptor.length === 128) {
+        item.faceDescriptor = faceDescriptor;
+        if (!item.faceDescriptors) item.faceDescriptors = [];
+        item.faceDescriptors.push(faceDescriptor);
+      }
       if (photoThumbnail) item.photoThumbnail = photoThumbnail;
       item.isRegistered = true;
       item.updatedAt = new Date();
@@ -290,15 +363,18 @@ const handleRegisterPost = async (req, res) => {
       const newVisitor = {
         _id: 'mem_' + Date.now(),
         userId,
+        familyCode: familyCode || 'MB-1001',
         name,
         relationship,
         contextNote: contextNote || '',
         preferredLanguage: preferredLanguage || 'en-US',
         faceDescriptor: faceDescriptor || [],
+        faceDescriptors: faceDescriptor && faceDescriptor.length === 128 ? [faceDescriptor] : [],
         photoThumbnail: photoThumbnail || '',
         isRegistered: true,
         lastSeen: new Date(),
         createdAt: new Date(),
+        updatedAt: new Date(),
       };
       global._memoryBridgeVisitors.unshift(newVisitor);
       return res.status(201).json(newVisitor);
@@ -318,6 +394,10 @@ app.all('*', async (req, res) => {
   if (urlPath.includes('/auth/access-code')) return handleAuthCode(req, res);
 
   // Visitor Routes
+  if (urlPath.includes('/visitors/append-vector')) {
+    if (method === 'POST') return handleAppendVectorPost(req, res);
+  }
+
   if (urlPath.includes('/visitors/unknown')) {
     if (method === 'GET') return handleVisitorsGet({ ...req, query: { ...req.query, registered: 'false' } }, res);
     if (method === 'POST') return handleUnknownPost(req, res);
