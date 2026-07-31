@@ -291,18 +291,24 @@ export default function PatientMirror() {
           } catch (e) {}
         }
 
-        // IF NO FACE IS IN FRAME: Reset everything after absence
+        // IF NO FACE DETECTED: Do NOT wipe state on single frame dropouts! Require 6 consecutive absent frames (~3 seconds)
         if (!detection) {
-          unknownFrameCounterRef.current = 0;
-          activeRecognizedUserRef.current = null;
-          isSnapshotLockedRef.current = false;
-          setRecognizedPerson(null);
-          setIsUnknownPresent(false);
-          setDetectionDistance(null);
-          spokenCountRef.current = 0;
-          lastSpokenPersonIdRef.current = null;
+          noFaceFramesCountRef.current += 1;
+          if (noFaceFramesCountRef.current >= 6) {
+            unknownFrameCounterRef.current = 0;
+            activeRecognizedUserRef.current = null;
+            isSnapshotLockedRef.current = false;
+            setRecognizedPerson(null);
+            setIsUnknownPresent(false);
+            setDetectionDistance(null);
+            spokenCountRef.current = 0;
+            lastSpokenPersonIdRef.current = null;
+          }
           return;
         }
+
+        // Face is present -> reset no-face absence counter
+        noFaceFramesCountRef.current = 0;
 
         const box = detection.detection.box;
         const liveDescriptor = detection.descriptor;
@@ -334,14 +340,12 @@ export default function PatientMirror() {
         });
 
         // =========================================================
-        // 🟢 CASE A: FACE IS RECOGNIZED (Distance < 0.52)
+        // 🟢 CASE A: FACE IS RECOGNIZED (Distance < 0.58)
         // =========================================================
-        if (bestMatch && minDistance < 0.52) {
-          // RESET the unknown counter and snapshot lock immediately!
+        if (bestMatch && (minDistance < 0.58 || activeRecognizedUserRef.current === bestMatch._id)) {
+          // Reset unknown counter and unlock snapshots for when this person leaves
           unknownFrameCounterRef.current = 0;
-          isSnapshotLockedRef.current = false;
 
-          // Lock this active person ID so movement flickering is ignored
           if (activeRecognizedUserRef.current !== bestMatch._id) {
             activeRecognizedUserRef.current = bestMatch._id;
             setRecognizedPerson(bestMatch);
@@ -357,28 +361,27 @@ export default function PatientMirror() {
         }
 
         // =========================================================
-        // 🔴 CASE B: POTENTIAL UNKNOWN FACE (Distance >= 0.52)
+        // 🔴 CASE B: POTENTIAL UNKNOWN FACE (Distance >= 0.58)
         // =========================================================
 
-        // If we ALREADY recognized this person 1-2 seconds ago, IGNORE temporary movement flickers!
+        // If we ALREADY recognized this person previously in session, IGNORE head turns & movement flickers!
         if (activeRecognizedUserRef.current !== null) {
           unknownFrameCounterRef.current += 1;
 
-          // Require 4 consecutive unknown frames (~4 seconds) before losing the recognition lock
-          if (unknownFrameCounterRef.current < 4) {
+          // Require 8 consecutive unknown frames (~4 seconds) before releasing the active recognition lock
+          if (unknownFrameCounterRef.current < 8) {
             return;
           } else {
-            // Person has truly left or a new person took their place
             activeRecognizedUserRef.current = null;
           }
         }
 
-        // If truly UNKNOWN and not snapshot-locked, increment unknown frame count
+        // If truly UNKNOWN and not snapshot-locked, increment unknown counter
         unknownFrameCounterRef.current += 1;
 
-        // ONLY TAKE SNAPSHOT AFTER 3 CONSECUTIVE UNKNOWN FRAMES (~3 Seconds)
-        if (unknownFrameCounterRef.current >= 3 && !isSnapshotLockedRef.current) {
-          isSnapshotLockedRef.current = true; // Lock taking further photos!
+        // ONLY TAKE SNAPSHOT AFTER 4 CONSECUTIVE UNKNOWN FRAMES (~4 Seconds) AND WHEN NOT LOCKED
+        if (unknownFrameCounterRef.current >= 4 && !isSnapshotLockedRef.current) {
+          isSnapshotLockedRef.current = true; // Lock taking further photos until person leaves frame!
           setRecognizedPerson(null);
           setIsUnknownPresent(true);
           setDetectionDistance(null);
