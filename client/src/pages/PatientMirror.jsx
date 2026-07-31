@@ -14,7 +14,8 @@ import {
   Bell,
   Camera,
   Globe,
-  Radio
+  Radio,
+  ChevronDown
 } from 'lucide-react';
 import {
   TRANSLATIONS,
@@ -340,12 +341,6 @@ export default function PatientMirror() {
   const handleLanguageChange = (newLang) => {
     setCurrentLang(newLang);
     localStorage.setItem('mb_nativeLanguage', newLang);
-
-    // Reset capture & speech locks so changing language re-triggers capture & announcement in the new language!
-    hasCapturedForCurrentUnknownRef.current = false;
-    lastUnknownSpokenTimeRef.current = 0;
-    lastSpokenTimeRef.current = 0;
-
     showToast(`🌐 Language set to ${TRANSLATIONS[newLang]?.label}`);
 
     const userId = localStorage.getItem('mb_userId');
@@ -358,26 +353,40 @@ export default function PatientMirror() {
       body: JSON.stringify({ userId, nativeLanguage: newLang }),
     }).catch(() => {});
 
-    if ('speechSynthesis' in window) {
-      window.speechSynthesis.cancel();
-      setTimeout(() => {
-        const phrases = {
-          'en-US': 'Language set to English',
-          'hi-IN': 'भाषा हिंदी में सेट की गई है',
-          'mr-IN': 'भाषा मराठीमध्ये सेट केली आहे',
-          'es-ES': 'Idioma configurado en español',
-        };
-        const textToSpeak = phrases[newLang] || 'Language updated';
-        const utterance = new SpeechSynthesisUtterance(textToSpeak);
-        utterance.lang = newLang;
-        utterance.volume = 1.0;
-        utterance.rate = 0.88;
+    lastSpokenTimeRef.current = 0;
+    lastUnknownSpokenTimeRef.current = 0;
 
-        const matchedVoice = getVoiceForLanguage(newLang);
-        if (matchedVoice) utterance.voice = matchedVoice;
+    // If a person is currently recognized, re-announce memory cue in new language immediately!
+    if (recognizedPerson) {
+      speakMemoryCue(recognizedPerson);
+    } else {
+      hasCapturedForCurrentUnknownRef.current = false;
+      if ('speechSynthesis' in window) {
+        window.speechSynthesis.cancel();
+        setTimeout(() => {
+          const phrases = {
+            'en-US': 'Language set to English',
+            'hi-IN': 'भाषा हिंदी में सेट की गई है',
+            'mr-IN': 'भाषा मराठीमध्ये सेट केली आहे',
+            'bn-IN': 'ভাষা বাংলায় সেট করা হয়েছে',
+            'ta-IN': 'மொழி தமிழில் அமைக்கப்பட்டது',
+            'te-IN': 'భాష తెలుగులో సెట్ చేయబడింది',
+            'gu-IN': 'ભાષા ગુજરાતીમાં સેટ થઈ છે',
+            'kn-IN': 'ಭಾಷೆ ಕನ್ನಡದಲ್ಲಿ ಹೊಂದಿಸಲಾಗಿದೆ',
+            'es-ES': 'Idioma configurado en español',
+          };
+          const textToSpeak = phrases[newLang] || 'Language updated';
+          const utterance = new SpeechSynthesisUtterance(textToSpeak);
+          utterance.lang = newLang;
+          utterance.volume = 1.0;
+          utterance.rate = 0.88;
 
-        window.speechSynthesis.speak(utterance);
-      }, 100);
+          const matchedVoice = getVoiceForLanguage(newLang);
+          if (matchedVoice) utterance.voice = matchedVoice;
+
+          window.speechSynthesis.speak(utterance);
+        }, 100);
+      }
     }
   };
 
@@ -603,23 +612,21 @@ export default function PatientMirror() {
           )}
         </div>
 
-        {/* FLOATING LANGUAGE SWITCHER BADGE REQUIREMENT */}
-        <div className="flex items-center gap-2 bg-amber-200/70 p-1.5 rounded-2xl border border-amber-300">
-          <Globe className="w-4 h-4 text-[#0A192F] ml-1" />
-          {Object.keys(TRANSLATIONS).map((langKey) => (
-            <button
-              key={langKey}
-              onClick={() => handleLanguageChange(langKey)}
-              className={`px-3 py-1.5 rounded-xl text-xs font-extrabold transition-all flex items-center gap-1.5 ${
-                currentLang === langKey
-                  ? 'bg-[#0A192F] text-white shadow'
-                  : 'text-[#0A192F] hover:bg-amber-300/80'
-              }`}
-            >
-              <span>{TRANSLATIONS[langKey].flag}</span>
-              <span>{TRANSLATIONS[langKey].label}</span>
-            </button>
-          ))}
+        {/* PROFESSIONAL LANGUAGE SELECTOR DROPDOWN */}
+        <div className="relative flex items-center">
+          <select
+            value={currentLang}
+            onChange={(e) => handleLanguageChange(e.target.value)}
+            className="bg-[#0A192F] text-amber-100 font-extrabold text-xs py-2 px-3 pl-8 pr-8 rounded-xl border border-amber-300 shadow-md cursor-pointer focus:outline-none appearance-none hover:bg-slate-800 transition-all"
+          >
+            {Object.keys(TRANSLATIONS).map((langKey) => (
+              <option key={langKey} value={langKey} className="bg-[#0A192F] text-white py-1">
+                {TRANSLATIONS[langKey].flag} {TRANSLATIONS[langKey].label}
+              </option>
+            ))}
+          </select>
+          <Globe className="w-4 h-4 text-amber-300 absolute left-2.5 pointer-events-none" />
+          <ChevronDown className="w-4 h-4 text-amber-300 absolute right-2.5 pointer-events-none" />
         </div>
 
         {/* Action Controls */}

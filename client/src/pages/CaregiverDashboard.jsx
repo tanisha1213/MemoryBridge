@@ -22,7 +22,8 @@ import {
   Pill,
   Sparkles,
   LogOut,
-  KeyRound
+  KeyRound,
+  ChevronDown
 } from 'lucide-react';
 import {
   TRANSLATIONS,
@@ -396,21 +397,20 @@ export default function CaregiverDashboard() {
 
         {/* CAREGIVER LANGUAGE SWITCHER REQUIREMENT */}
         <div className="flex items-center gap-3">
-          <div className="flex items-center gap-1 bg-slate-900 p-1 rounded-2xl border border-slate-800">
-            <Globe className="w-4 h-4 text-indigo-400 ml-1.5" />
-            {Object.keys(TRANSLATIONS).map((langKey) => (
-              <button
-                key={langKey}
-                onClick={() => setCaregiverLang(langKey)}
-                className={`px-2.5 py-1 rounded-xl text-xs font-bold transition-all ${
-                  caregiverLang === langKey
-                    ? 'bg-indigo-600 text-white shadow'
-                    : 'text-slate-400 hover:text-white'
-                }`}
-              >
-                {TRANSLATIONS[langKey].flag} {TRANSLATIONS[langKey].label}
-              </button>
-            ))}
+          <div className="relative flex items-center">
+            <select
+              value={caregiverLang}
+              onChange={(e) => setCaregiverLang(e.target.value)}
+              className="bg-slate-900 text-indigo-200 font-extrabold text-xs py-2 px-3 pl-8 pr-8 rounded-xl border border-slate-700 shadow cursor-pointer focus:outline-none appearance-none hover:bg-slate-800 transition-all"
+            >
+              {Object.keys(TRANSLATIONS).map((langKey) => (
+                <option key={langKey} value={langKey} className="bg-slate-900 text-white py-1">
+                  {TRANSLATIONS[langKey].flag} {TRANSLATIONS[langKey].label}
+                </option>
+              ))}
+            </select>
+            <Globe className="w-4 h-4 text-indigo-400 absolute left-2.5 pointer-events-none" />
+            <ChevronDown className="w-4 h-4 text-indigo-400 absolute right-2.5 pointer-events-none" />
           </div>
 
           <button
