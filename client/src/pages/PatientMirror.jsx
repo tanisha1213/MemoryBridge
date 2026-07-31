@@ -213,19 +213,19 @@ export default function PatientMirror() {
   useEffect(() => {
     async function loadModelsAndData() {
       try {
-        setModelStatus('Loading neural network models (WebGL)...');
+        setModelStatus('Loading neural network models...');
         
         await Promise.all([
-          faceapi.nets.ssdMobilenetv1.loadFromUri(MODEL_CDN),
-          faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_CDN),
-          faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_CDN),
-          faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_CDN),
+          faceapi.nets.tinyFaceDetector.loadFromUri('/models').catch(() => faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_CDN)),
+          faceapi.nets.faceLandmark68Net.loadFromUri('/models').catch(() => faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_CDN)),
+          faceapi.nets.faceRecognitionNet.loadFromUri('/models').catch(() => faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_CDN)),
+          faceapi.nets.ssdMobilenetv1.loadFromUri('/models').catch(() => faceapi.nets.ssdMobilenetv1.loadFromUri(MODEL_CDN)),
         ]);
 
         setIsModelLoaded(true);
         setModelStatus('AI Face Detector Ready');
       } catch (err) {
-        console.warn('CDN model load failed, fallback to tiny detector...', err);
+        console.warn('Model load fallback to CDN...', err);
         try {
           await Promise.all([
             faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_CDN),
