@@ -293,6 +293,43 @@ export default function PatientMirror() {
     return () => clearInterval(interval);
   }, [userId, accessCode]);
 
+  // Mobile Gesture Initialization & WebAudio Unlock
+  const initializeMobileEngine = async () => {
+    try {
+      if ('speechSynthesis' in window) {
+        window.speechSynthesis.cancel();
+        const silentUtterance = new SpeechSynthesisUtterance('');
+        window.speechSynthesis.speak(silentUtterance);
+      }
+
+      const constraints = {
+        video: {
+          facingMode: 'user', // Front camera on mobile
+          width: { ideal: 640, max: 1280 },
+          height: { ideal: 480, max: 720 },
+          frameRate: { ideal: 15, max: 30 },
+        },
+        audio: false,
+      };
+
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        videoRef.current.onloadedmetadata = async () => {
+          try {
+            await videoRef.current.play();
+            setCameraActive(true);
+            setCameraError(null);
+          } catch (e) {}
+        };
+      }
+    } catch (err) {
+      console.error('Mobile Camera Init Failed:', err);
+      setCameraError('Camera Permission Denied. Please allow camera in browser settings.');
+    }
+  };
+
   // Start mobile-optimized webcam feed
   useEffect(() => {
     let stream = null;
@@ -315,10 +352,12 @@ export default function PatientMirror() {
 
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
-          try {
-            await videoRef.current.play();
-          } catch (e) {}
-          setCameraActive(true);
+          videoRef.current.onloadedmetadata = async () => {
+            try {
+              await videoRef.current.play();
+              setCameraActive(true);
+            } catch (e) {}
+          };
         }
       } catch (err) {
         console.error('Mobile Camera Error:', err);
@@ -709,8 +748,9 @@ export default function PatientMirror() {
       showToast(isManual ? '📸 Capturing manual snapshot...' : '📸 Unrecognized face detected! Capturing...');
 
       const canvas = document.createElement('canvas');
-      canvas.width = 640;
-      canvas.height = 480;
+      // Downscale mobile frame resolution to 480x360 to prevent WebGL/GPU memory crashes
+      canvas.width = 480;
+      canvas.height = 360;
       const ctx = canvas.getContext('2d');
       
       const video = videoRef.current;
@@ -732,17 +772,17 @@ export default function PatientMirror() {
         ctx.fillRect(0, 0, canvas.width, canvas.height);
         ctx.fillStyle = '#6366f1';
         ctx.beginPath();
-        ctx.arc(320, 200, 80, 0, Math.PI * 2);
+        ctx.arc(240, 150, 60, 0, Math.PI * 2);
         ctx.fill();
         ctx.fillStyle = '#e0e7ff';
-        ctx.font = 'bold 24px sans-serif';
+        ctx.font = 'bold 20px sans-serif';
         ctx.textAlign = 'center';
-        ctx.fillText('Unrecognized Visitor Snapshot', 320, 340);
-        ctx.font = '16px sans-serif';
-        ctx.fillText(new Date().toLocaleTimeString(), 320, 380);
+        ctx.fillText('Unrecognized Visitor Snapshot', 240, 250);
+        ctx.font = '14px sans-serif';
+        ctx.fillText(new Date().toLocaleTimeString(), 240, 280);
       }
 
-      const photoThumbnail = canvas.toDataURL('image/jpeg', 0.75);
+      const photoThumbnail = canvas.toDataURL('image/jpeg', 0.5);
       const dummyDescriptor = Array.from({ length: 128 }, () => (Math.random() - 0.5) * 0.1);
       const userId = localStorage.getItem('mb_userId');
       const accessCode = localStorage.getItem('mb_accessCode');
