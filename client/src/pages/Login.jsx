@@ -20,7 +20,12 @@ export default function Login() {
     localStorage.setItem('mb_userEmail', userData.email || email || 'demo@memorybridge.com');
     localStorage.setItem('mb_accessCode', userData.accessCode || accessCode || 'MB-1001');
     localStorage.setItem('mb_patientName', userData.patientName || patientName || 'Tanisha');
-    localStorage.setItem('mb_nativeLanguage', userData.nativeLanguage || nativeLanguage || 'en-US');
+    const existingLang = localStorage.getItem('mb_nativeLanguage');
+    if (userData.nativeLanguage) {
+      localStorage.setItem('mb_nativeLanguage', userData.nativeLanguage);
+    } else if (!existingLang) {
+      localStorage.setItem('mb_nativeLanguage', 'hi-IN');
+    }
   };
 
   // 1. Family Code Sign-In (Resilient fallback)

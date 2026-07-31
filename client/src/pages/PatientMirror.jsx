@@ -31,7 +31,9 @@ export default function PatientMirror() {
   const socketRef = useRef(null);
 
   // System & Language states
-  const [currentLang, setCurrentLang] = useState('en-US'); // 'en-US' | 'hi-IN' | 'mr-IN' | 'es-ES'
+  const [currentLang, setCurrentLang] = useState(() => {
+    return localStorage.getItem('mb_nativeLanguage') || 'hi-IN';
+  });
   const [isModelLoaded, setIsModelLoaded] = useState(false);
   const [modelStatus, setModelStatus] = useState('Initializing AI face detection...');
   const [cameraActive, setCameraActive] = useState(false);
@@ -78,12 +80,20 @@ export default function PatientMirror() {
     socketRef.current = socket;
 
     socket.on('connect', () => {
-      console.log('⚡ Patient Mirror Socket connected:', socket.id);
       setSocketConnected(true);
     });
 
     socket.on('disconnect', () => {
       setSocketConnected(false);
+    });
+
+    socket.on('VISITOR_REGISTERED', (data) => {
+      showToast('✨ New visitor added to memory bank!');
+      fetchData();
+    });
+
+    socket.on('REMINDER_ADDED', () => {
+      fetchData();
     });
 
     socket.on('PATIENT_SETTINGS_UPDATED', (data) => {
@@ -143,23 +153,13 @@ export default function PatientMirror() {
   const fetchData = async () => {
     try {
       const headers = getAuthHeaders();
-      const [visitorsRes, remindersRes, settingsRes] = await Promise.all([
+      const [visitorsRes, remindersRes] = await Promise.all([
         fetch('/api/visitors?registered=true', { headers }),
         fetch('/api/reminders', { headers }),
-        fetch('/api/settings', { headers }),
       ]);
 
       if (visitorsRes.ok) setRegisteredVisitors(await visitorsRes.json());
       if (remindersRes.ok) setReminders(await remindersRes.json());
-      if (settingsRes.ok) {
-        const s = await settingsRes.json();
-        const savedLocalLang = localStorage.getItem('mb_nativeLanguage');
-        if (savedLocalLang) {
-          setCurrentLang(savedLocalLang);
-        } else if (s.nativeLanguage) {
-          setCurrentLang(s.nativeLanguage);
-        }
-      }
     } catch (err) {
       console.error('Error fetching patient mirror data:', err);
     }
