@@ -173,8 +173,14 @@ const handleAuthCode = async (req, res) => {
   return res.json(fallbackUser);
 };
 
+const getUserId = (req) => {
+  const val = req.headers['x-user-id'] || req.query.userId || req.body?.userId || null;
+  return (!val || val === 'null' || val === 'undefined') ? null : val;
+};
+
 const getFamilyCode = (req) => {
-  return req.headers['x-family-code'] || req.query.familyCode || req.body?.familyCode || null;
+  const val = req.headers['x-family-code'] || req.query.familyCode || req.body?.familyCode || req.body?.accessCode || req.params?.familyCode || null;
+  return (!val || val === 'null' || val === 'undefined') ? 'MB-1001' : val.toUpperCase().trim();
 };
 
 async function getVisitors(registeredQuery, userId, familyCode) {

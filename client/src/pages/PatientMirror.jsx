@@ -271,7 +271,7 @@ export default function PatientMirror() {
   };
 
   const userId = localStorage.getItem('mb_userId');
-  const accessCode = localStorage.getItem('mb_accessCode');
+  const accessCode = localStorage.getItem('mb_accessCode') || 'MB-1001';
 
   useEffect(() => {
     // Reset all local state & active tracking refs on account/family change

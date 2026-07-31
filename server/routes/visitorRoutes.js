@@ -31,8 +31,15 @@ const isDbConnected = () => {
 };
 
 // Helper to extract userId and familyCode from request
-const getUserId = (req) => req.headers['x-user-id'] || req.query.userId || req.body?.userId || null;
-const getFamilyCode = (req) => req.headers['x-family-code'] || req.query.familyCode || req.body?.familyCode || null;
+const getUserId = (req) => {
+  const val = req.headers['x-user-id'] || req.query.userId || req.body?.userId || null;
+  return (!val || val === 'null' || val === 'undefined') ? null : val;
+};
+
+const getFamilyCode = (req) => {
+  const val = req.headers['x-family-code'] || req.query.familyCode || req.body?.familyCode || req.body?.accessCode || req.params?.familyCode || null;
+  return (!val || val === 'null' || val === 'undefined') ? 'MB-1001' : val.toUpperCase().trim();
+};
 
 // Server-Side Cosine Similarity Vector Matching Route
 router.post(['/match-vector', '/:familyCode/match-vector'], async (req, res) => {
