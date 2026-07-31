@@ -58,6 +58,7 @@ export default function PatientMirror() {
   const lastUnknownSpokenTimeRef = useRef(0);
   const lastUnknownCaptureTimeRef = useRef(0);
   const activeRecognizedUserRef = useRef(null); // Currently recognized person ID
+  const spokenUserRef = useRef(null); // Prevents duplicate audio repeats per encounter
   const unknownFrameCounterRef = useRef(0); // How many consecutive unknown frames
   const isSnapshotLockedRef = useRef(false); // Prevents taking duplicate photos
   const snapshotCooldownTimerRef = useRef(null);
@@ -320,6 +321,7 @@ export default function PatientMirror() {
           if (noFaceFramesCountRef.current >= 3) {
             unknownFrameCounterRef.current = 0;
             activeRecognizedUserRef.current = null;
+            spokenUserRef.current = null; // Reset audio memory lock when frame empties
             isSnapshotLockedRef.current = false;
             setRecognizedPerson(null);
             setIsUnknownPresent(false);
@@ -561,6 +563,10 @@ export default function PatientMirror() {
   const speakMemoryCue = (person) => {
     if (!('speechSynthesis' in window)) return;
 
+    // STRICT CHECK: IF THIS PERSON WAS ALREADY SPOKEN TO, DO NOT REPEAT!
+    if (spokenUserRef.current === person._id) return;
+    spokenUserRef.current = person._id;
+
     if (
       lastSpokenPersonIdRef.current === person._id &&
       spokenCountRef.current >= 2
@@ -612,7 +618,7 @@ export default function PatientMirror() {
         const utterance = new SpeechSynthesisUtterance(textToSpeak);
         utterance.lang = currentLang;
         utterance.volume = 1.0;
-        utterance.rate = 0.85;
+        utterance.rate = 0.88;
 
         const matchedVoice = getVoiceForLanguage(currentLang);
         if (matchedVoice) utterance.voice = matchedVoice;
@@ -625,6 +631,10 @@ export default function PatientMirror() {
   // Multilingual SpeechSynthesis for UNRECOGNIZED Visitor (Spoken max 2 times per encounter)
   const speakUnknownAnnouncement = () => {
     if (!('speechSynthesis' in window)) return;
+
+    // STRICT CHECK: PREVENT REPEATED UNKNOWN ALERTS
+    if (spokenUserRef.current === 'UNKNOWN_VISITOR') return;
+    spokenUserRef.current = 'UNKNOWN_VISITOR';
 
     if (spokenCountRef.current >= 2) return; // Stop speaking after 2 times!
 
