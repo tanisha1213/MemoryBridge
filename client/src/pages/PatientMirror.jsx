@@ -56,9 +56,8 @@ export default function PatientMirror() {
   const lastSpokenTimeRef = useRef(0);
   const lastUnknownSpokenTimeRef = useRef(0);
   const lastUnknownCaptureTimeRef = useRef(0);
-  const isCooldownRef = useRef(false); // 30-second cooldown lock to prevent snapshot flooding
-  const trackSessionLockRef = useRef(false); // Session-based track lock
-  const lastTrackedBoxRef = useRef(null); // IoU Person Bounding Box Tracker
+  const unknownCooldownLockRef = useRef(false); // 20-second cooldown lock per unknown session
+  const lastFaceCenterRef = useRef(null); // Face center tracking for 150px jump detection
   const spokenCountRef = useRef(0);
   const noFaceFramesCountRef = useRef(0);
   const isProcessingFrameRef = useRef(false);
@@ -108,27 +107,6 @@ export default function PatientMirror() {
     } catch (e) {
       return [0.5, 0.5, 0.5];
     }
-  };
-
-  // COMPUTER VISION: Outfit Color Vector Distance
-  const calcColorDistance = (vecA, vecB) => {
-    if (!vecA || !vecB || vecA.length !== 3 || vecB.length !== 3) return 0.5;
-    const rDiff = vecA[0] - vecB[0];
-    const gDiff = vecA[1] - vecB[1];
-    const bDiff = vecA[2] - vecB[2];
-    return Math.sqrt(rDiff * rDiff + gDiff * gDiff + bDiff * bDiff) / 1.732;
-  };
-
-  // COMPUTER VISION: Hybrid Matching Score = (Face Distance * 0.7) + (Outfit Distance * 0.3)
-  const calcHybridDistance = (liveFaceDesc, liveOutfitVec, visitor) => {
-    const savedFace = new Float32Array(visitor.faceDescriptor);
-    const faceDist = faceapi.euclideanDistance(liveFaceDesc, savedFace);
-
-    if (visitor.outfitVector && visitor.outfitVector.length === 3) {
-      const outfitDist = calcColorDistance(liveOutfitVec, visitor.outfitVector);
-      return faceDist * 0.7 + outfitDist * 0.3;
-    }
-    return faceDist;
   };
 
   // Socket.io Connection Setup
@@ -268,7 +246,7 @@ export default function PatientMirror() {
     };
   }, []);
 
-  // Continuous face detection loop
+  // Continuous face detection loop with STRICT 3-Step Gatekeeper Logic
   useEffect(() => {
     let intervalId = null;
 
@@ -311,46 +289,63 @@ export default function PatientMirror() {
 
         if (detection) {
           noFaceFramesCountRef.current = 0;
-          lastTrackedBoxRef.current = detection.detection.box;
+
+          const box = detection.detection.box;
+          const currentCenterX = box.x + box.width / 2;
+          const currentCenterY = box.y + box.height / 2;
+
+          // STEP 2: Immediate Session Reset if face jumps > 150px in 1 frame
+          if (lastFaceCenterRef.current) {
+            const moveDist = Math.sqrt(
+              Math.pow(currentCenterX - lastFaceCenterRef.current.x, 2) +
+                Math.pow(currentCenterY - lastFaceCenterRef.current.y, 2)
+            );
+            if (moveDist > 150) {
+              setRecognizedPerson(null);
+              unknownCooldownLockRef.current = false;
+            }
+          }
+          lastFaceCenterRef.current = { x: currentCenterX, y: currentCenterY };
 
           const liveDescriptor = detection.descriptor;
-          const liveOutfitVector = extractOutfitColorVector(video, detection.detection.box);
+          const liveOutfitVector = extractOutfitColorVector(video, box);
 
-          let bestMatch = null;
-          let minDistance = 1.0;
+          // STEP 1: STRICT PURE FACE DISTANCE GATEWAY
+          let minFaceDistance = 1.0;
+          let bestFaceMatch = null;
 
           registeredVisitors.forEach((visitor) => {
             if (visitor.faceDescriptor && visitor.faceDescriptor.length === 128) {
-              const dist = calcHybridDistance(liveDescriptor, liveOutfitVector, visitor);
-              if (dist < minDistance) {
-                minDistance = dist;
-                bestMatch = visitor;
+              const savedDescriptor = new Float32Array(visitor.faceDescriptor);
+              const dist = faceapi.euclideanDistance(liveDescriptor, savedDescriptor);
+              if (dist < minFaceDistance) {
+                minFaceDistance = dist;
+                bestFaceMatch = visitor;
               }
             }
           });
 
-          // Match threshold: If Hybrid Distance < 0.62, classify as recognized
-          if (bestMatch && minDistance < 0.62) {
-            setRecognizedPerson(bestMatch);
+          // Match threshold: Must be STRICTLY < 0.50 (HARD REJECT if >= 0.50)
+          if (bestFaceMatch && minFaceDistance < 0.50) {
+            setRecognizedPerson(bestFaceMatch);
             setIsUnknownPresent(false);
-            setDetectionDistance(minDistance.toFixed(2));
-            speakMemoryCue(bestMatch);
+            setDetectionDistance(minFaceDistance.toFixed(2));
+            speakMemoryCue(bestFaceMatch);
           } else {
-            // UNRECOGNIZED FACE DETECTED
+            // HARD REJECT as UNKNOWN VISITOR (Distance >= 0.50)
             setRecognizedPerson(null);
             setIsUnknownPresent(true);
             setDetectionDistance(null);
 
-            // Session Lockout: Do NOT send HTTP POST request if trackSessionLockRef.current or isCooldownRef.current is true
-            if (!trackSessionLockRef.current && !isCooldownRef.current) {
-              trackSessionLockRef.current = true;
-              isCooldownRef.current = true;
+            // STEP 3: Snapshot Cooldown per Unknown Face (20-second lock)
+            if (!unknownCooldownLockRef.current) {
+              unknownCooldownLockRef.current = true;
               captureAndPostUnknownVisitor(Array.from(liveDescriptor), liveOutfitVector, false);
               speakUnknownAnnouncement();
 
               setTimeout(() => {
-                isCooldownRef.current = false;
-              }, 30000);
+                unknownCooldownLockRef.current = false;
+              }, 20000);
             }
           }
         } else {
@@ -359,10 +354,10 @@ export default function PatientMirror() {
           setIsUnknownPresent(false);
           setDetectionDistance(null);
 
-          // Clear track session lock ONLY when zero people detected for 10 consecutive frames (~5 seconds)
-          if (noFaceFramesCountRef.current > 10) {
-            lastTrackedBoxRef.current = null;
-            trackSessionLockRef.current = false;
+          // STEP 2: Instant Reset on 1.5 Seconds Absence (3 frames @ 500ms)
+          if (noFaceFramesCountRef.current >= 3) {
+            lastFaceCenterRef.current = null;
+            unknownCooldownLockRef.current = false; // Reset lock immediately when face leaves frame!
             spokenCountRef.current = 0;
             lastSpokenPersonIdRef.current = null;
           }
