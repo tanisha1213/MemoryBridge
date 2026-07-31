@@ -550,7 +550,7 @@ app.all('*', async (req, res) => {
     if (method === 'POST') return handleRecognizeAndSnapshotPost(req, res);
   }
 
-  if (urlPath.includes('/visitors/unknown') || urlPath.includes('/visitors/unknowns')) {
+  if (urlPath.includes('/unknown') || urlPath.includes('/unknowns')) {
     if (method === 'GET') return handleVisitorsGet({ ...req, query: { ...req.query, registered: 'false' } }, res);
     if (method === 'POST') return handleUnknownPost(req, res);
   }
