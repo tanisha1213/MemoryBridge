@@ -96,15 +96,17 @@ router.get('/', async (req, res) => {
 
     if (isDbConnected()) {
       try {
-        let filter = {
-          $or: [
-            ...(userId ? [{ userId }] : []),
-            ...(familyCode ? [{ familyCode }] : []),
-          ],
-        };
+        let filter = {};
+        const conditions = [];
+        if (userId) conditions.push({ userId });
+        if (familyCode) conditions.push({ familyCode });
+
+        if (conditions.length > 0) {
+          filter.$or = conditions;
+        }
 
         if (registered === 'true') filter.isRegistered = true;
-        if (registered === 'false') filter.isRegistered = false;
+        if (registered === 'false') filter.isRegistered = { $ne: true };
 
         const visitors = await Visitor.find(filter).sort({ updatedAt: -1, createdAt: -1 });
         return res.json(visitors);

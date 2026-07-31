@@ -181,17 +181,19 @@ async function getVisitors(registeredQuery, userId, familyCode) {
   if (isDbConnected()) {
     try {
       let filter = {};
-      if (userId) {
-        filter.userId = userId;
-      } else if (familyCode) {
-        filter.familyCode = familyCode;
+      const conditions = [];
+      if (userId) conditions.push({ userId });
+      if (familyCode) conditions.push({ familyCode });
+
+      if (conditions.length > 0) {
+        filter.$or = conditions;
       } else {
         return [];
       }
 
       if (registeredQuery === 'true') filter.isRegistered = true;
       if (registeredQuery === 'false') {
-        filter.$or = [{ isRegistered: false }, { isRegistered: { $exists: false } }, { isRegistered: null }];
+        filter.isRegistered = { $ne: true };
       }
       return await Visitor.find(filter).sort({ updatedAt: -1, createdAt: -1 });
     } catch (e) {}
