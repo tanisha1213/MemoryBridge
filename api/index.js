@@ -182,46 +182,56 @@ const getFamilyCode = (req) => {
 };
 
 async function getVisitors(registeredQuery, userId, familyCode) {
-  if (isDbConnected()) {
-    try {
-      let filter = {};
-      const conditions = [];
-      if (userId) conditions.push({ userId });
-      if (familyCode) conditions.push({ familyCode });
+  try {
+    if (isDbConnected()) {
+      try {
+        let filter = {
+          $or: [
+            ...(userId ? [{ userId }] : []),
+            ...(familyCode ? [{ familyCode }] : []),
+          ],
+        };
+        if (registeredQuery === 'true') filter.isRegistered = true;
+        if (registeredQuery === 'false') filter.isRegistered = { $ne: true };
 
-      if (conditions.length > 0) {
-        filter.$or = conditions;
-      } else {
-        return [];
+        const list = await Visitor.find(filter).sort({ updatedAt: -1, createdAt: -1 }).lean();
+        return list || [];
+      } catch (e) {
+        console.warn("MongoDB Visitors query error:", e.message);
       }
+    }
 
-      if (registeredQuery === 'true') filter.isRegistered = true;
-      if (registeredQuery === 'false') {
-        filter.isRegistered = { $ne: true };
-      }
-      return await Visitor.find(filter).sort({ updatedAt: -1, createdAt: -1 });
-    } catch (e) {}
+    let filtered = (global._memoryBridgeVisitors || []).filter((v) => {
+      if (!v) return false;
+      if (userId && String(v.userId) === String(userId)) return true;
+      if (familyCode && String(v.familyCode) === String(familyCode)) return true;
+      return false;
+    });
+
+    if (registeredQuery === 'true') filtered = filtered.filter((v) => v.isRegistered === true);
+    if (registeredQuery === 'false') filtered = filtered.filter((v) => !v.isRegistered);
+
+    filtered.sort((a, b) => {
+      const timeA = new Date(a.updatedAt || a.createdAt || a.lastSeen || 0).getTime();
+      const timeB = new Date(b.updatedAt || b.createdAt || b.lastSeen || 0).getTime();
+      return timeB - timeA;
+    });
+
+    return filtered;
+  } catch (err) {
+    return global._memoryBridgeVisitors || [];
   }
-
-  let filtered = global._memoryBridgeVisitors.filter((v) => {
-    if (userId && String(v.userId) === String(userId)) return true;
-    if (familyCode && String(v.familyCode) === String(familyCode)) return true;
-    return false;
-  });
-  if (registeredQuery === 'true') filtered = filtered.filter((v) => v.isRegistered === true);
-  if (registeredQuery === 'false') filtered = filtered.filter((v) => !v.isRegistered);
-  filtered.sort((a, b) => new Date(b.updatedAt || b.createdAt || b.lastSeen) - new Date(a.updatedAt || a.createdAt || a.lastSeen));
-  return filtered;
 }
 
 const handleVisitorsGet = async (req, res) => {
   try {
     const userId = getUserId(req);
     const familyCode = getFamilyCode(req);
-    const list = await getVisitors(req.query.registered, userId, familyCode);
-    return res.json(list);
+    const regQuery = req.query?.registered !== undefined ? String(req.query.registered) : undefined;
+    const list = await getVisitors(regQuery, userId, familyCode);
+    return res.json(list || []);
   } catch (err) {
-    return res.status(500).json({ error: 'Failed to fetch visitors' });
+    return res.json(global._memoryBridgeVisitors || []);
   }
 };
 
