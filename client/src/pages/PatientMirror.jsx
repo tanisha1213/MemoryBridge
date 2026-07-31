@@ -134,6 +134,8 @@ export default function PatientMirror() {
     };
   }, []);
 
+  const lastUnknownCaptureTimeRef = useRef(0);
+
   // Continuous face detection loop
   useEffect(() => {
     let intervalId = null;
@@ -177,8 +179,10 @@ export default function PatientMirror() {
           } catch (e) {}
         }
 
+        const now = Date.now();
+
         if (detection) {
-          noFaceFramesCountRef.current = 0; // Face detected! Reset missing counter.
+          noFaceFramesCountRef.current = 0; // Reset missing face counter when face is visible
 
           const liveDescriptor = Array.from(detection.descriptor);
           let bestMatch = null;
@@ -198,18 +202,22 @@ export default function PatientMirror() {
           if (bestMatch && minDistance < 0.65) {
             setRecognizedPerson(bestMatch);
             setDetectionDistance(minDistance.toFixed(2));
-            speakMemoryCue(bestMatch); // Speaks automatically for recognized visitor!
+            speakMemoryCue(bestMatch);
             hasCapturedForCurrentUnknownRef.current = false;
           } else {
             // UNRECOGNIZED FACE DETECTED
             setRecognizedPerson(null);
             setDetectionDistance(null);
 
-            // TAKE EXACTLY 1 SNAPSHOT PER UNKNOWN ENCOUNTER
-            if (!hasCapturedForCurrentUnknownRef.current) {
+            // TAKE EXACTLY 1 SNAPSHOT PER UNKNOWN VISITOR EPISODE (45-second cooldown lock)
+            if (
+              !hasCapturedForCurrentUnknownRef.current &&
+              now - lastUnknownCaptureTimeRef.current > 45000
+            ) {
               hasCapturedForCurrentUnknownRef.current = true;
+              lastUnknownCaptureTimeRef.current = now;
               captureAndPostUnknownVisitor(liveDescriptor, false);
-              speakUnknownAnnouncement(); // Speaks automatically for unrecognized visitor!
+              speakUnknownAnnouncement();
             }
           }
         } else {
@@ -218,8 +226,11 @@ export default function PatientMirror() {
           setRecognizedPerson(null);
           setDetectionDistance(null);
 
-          // Require no face seen for at least 8 frames (~4 seconds) before resetting encounter state
-          if (noFaceFramesCountRef.current > 8) {
+          // Require NO face detected for at least 30 frames (~15 seconds) AND 45s cooldown before resetting encounter lock
+          if (
+            noFaceFramesCountRef.current > 30 &&
+            now - lastUnknownCaptureTimeRef.current > 45000
+          ) {
             hasCapturedForCurrentUnknownRef.current = false;
           }
         }
