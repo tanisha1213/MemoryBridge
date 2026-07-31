@@ -3,5 +3,4 @@ flask-cors
 pymongo
 numpy
 opencv-python-headless
-face_recognition
 gunicorn
