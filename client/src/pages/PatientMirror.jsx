@@ -57,6 +57,7 @@ export default function PatientMirror() {
   const lastUnknownSpokenTimeRef = useRef(0);
   const lastUnknownCaptureTimeRef = useRef(0);
   const hasCapturedForCurrentUnknownRef = useRef(false);
+  const isCooldownRef = useRef(false); // 30-second cooldown lock to prevent snapshot flooding
   const spokenCountRef = useRef(0);
   const noFaceFramesCountRef = useRef(0);
   const isProcessingFrameRef = useRef(false);
@@ -78,7 +79,6 @@ export default function PatientMirror() {
       transports: ['websocket', 'polling'],
       reconnectionAttempts: 5,
     });
-
     socketRef.current = socket;
 
     socket.on('connect', () => {
@@ -250,13 +250,14 @@ export default function PatientMirror() {
         if (detection) {
           noFaceFramesCountRef.current = 0;
 
-          const liveDescriptor = Array.from(detection.descriptor);
+          const liveDescriptor = detection.descriptor;
           let bestMatch = null;
           let minDistance = 1.0;
 
           registeredVisitors.forEach((visitor) => {
             if (visitor.faceDescriptor && visitor.faceDescriptor.length === 128) {
-              const dist = calcEuclideanDistance(liveDescriptor, visitor.faceDescriptor);
+              const savedDescriptor = new Float32Array(visitor.faceDescriptor);
+              const dist = faceapi.euclideanDistance(liveDescriptor, savedDescriptor);
               if (dist < minDistance) {
                 minDistance = dist;
                 bestMatch = visitor;
@@ -264,24 +265,28 @@ export default function PatientMirror() {
             }
           });
 
-          // Pose & Outfit Invariant threshold: Distance < 0.62 (Matches pose/outfit changes perfectly!)
-          if (bestMatch && minDistance < 0.62) {
+          // Match threshold: If distance < 0.55, classify as recognized
+          if (bestMatch && minDistance < 0.55) {
             setRecognizedPerson(bestMatch);
             setIsUnknownPresent(false);
             setDetectionDistance(minDistance.toFixed(2));
             speakMemoryCue(bestMatch);
-            hasCapturedForCurrentUnknownRef.current = false;
           } else {
             // UNRECOGNIZED FACE DETECTED
             setRecognizedPerson(null);
             setIsUnknownPresent(true);
             setDetectionDistance(null);
 
-            // Instant snapshot capture for unrecognized visitor episode
-            if (!hasCapturedForCurrentUnknownRef.current) {
-              hasCapturedForCurrentUnknownRef.current = true;
-              captureAndPostUnknownVisitor(liveDescriptor, false);
+            // Cooldown lock: Do NOT send HTTP POST request if isCooldownRef.current is true (30 seconds)
+            if (!isCooldownRef.current) {
+              isCooldownRef.current = true;
+              captureAndPostUnknownVisitor(Array.from(liveDescriptor), false);
               speakUnknownAnnouncement();
+
+              // Reset 30-second cooldown timer
+              setTimeout(() => {
+                isCooldownRef.current = false;
+              }, 30000);
             }
           }
         } else {
@@ -290,9 +295,7 @@ export default function PatientMirror() {
           setIsUnknownPresent(false);
           setDetectionDistance(null);
 
-          // Reset encounter lock and speech count after 10 frames (~5 seconds) of no face
           if (noFaceFramesCountRef.current > 10) {
-            hasCapturedForCurrentUnknownRef.current = false;
             spokenCountRef.current = 0;
             lastSpokenPersonIdRef.current = null;
           }
