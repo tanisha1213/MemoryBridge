@@ -56,6 +56,7 @@ export default function PatientMirror() {
   const lastUnknownSpokenTimeRef = useRef(0);
   const lastUnknownCaptureTimeRef = useRef(0);
   const hasCapturedForCurrentUnknownRef = useRef(false);
+  const spokenCountRef = useRef(0);
   const noFaceFramesCountRef = useRef(0);
   const isProcessingFrameRef = useRef(false);
 
@@ -99,7 +100,6 @@ export default function PatientMirror() {
     socket.on('PATIENT_SETTINGS_UPDATED', (data) => {
       if (data && data.nativeLanguage) {
         setCurrentLang(data.nativeLanguage);
-        showToast(`🌐 Language updated to ${data.nativeLanguage}`);
       }
     });
 
@@ -263,8 +263,8 @@ export default function PatientMirror() {
             }
           });
 
-          // Optimal face distance match cutoff: Distance < 0.52 (Pose/Outfit invariant, zero false matches!)
-          if (bestMatch && minDistance < 0.52) {
+          // Pose & Outfit Invariant threshold: Distance < 0.62 (Matches pose/outfit changes perfectly!)
+          if (bestMatch && minDistance < 0.62) {
             setRecognizedPerson(bestMatch);
             setIsUnknownPresent(false);
             setDetectionDistance(minDistance.toFixed(2));
@@ -289,9 +289,11 @@ export default function PatientMirror() {
           setIsUnknownPresent(false);
           setDetectionDistance(null);
 
-          // Reset encounter lock after 10 frames (~5 seconds) of no face
+          // Reset encounter lock and speech count after 10 frames (~5 seconds) of no face
           if (noFaceFramesCountRef.current > 10) {
             hasCapturedForCurrentUnknownRef.current = false;
+            spokenCountRef.current = 0;
+            lastSpokenPersonIdRef.current = null;
           }
         }
       } catch (err) {
@@ -390,36 +392,50 @@ export default function PatientMirror() {
     }
   };
 
-  // Multilingual SpeechSynthesis for RECOGNIZED Visitor
+  // Multilingual SpeechSynthesis for RECOGNIZED Visitor (Spoken max 2 times per encounter)
   const speakMemoryCue = (person) => {
     if (!('speechSynthesis' in window)) return;
 
-    const now = Date.now();
     if (
       lastSpokenPersonIdRef.current === person._id &&
-      now - lastSpokenTimeRef.current < 8000
+      spokenCountRef.current >= 2
     ) {
-      return;
+      return; // Stop speaking after 2 times!
+    }
+
+    if (lastSpokenPersonIdRef.current !== person._id) {
+      spokenCountRef.current = 0;
     }
 
     lastSpokenPersonIdRef.current = person._id;
-    lastSpokenTimeRef.current = now;
+    spokenCountRef.current += 1;
+    lastSpokenTimeRef.current = Date.now();
 
     window.speechSynthesis.cancel();
 
     setTimeout(() => {
       const relLocalized = getLocalizedRelationship(person.relationship, currentLang);
+      let noteText = person.contextNote || '';
+
+      if (currentLang !== 'en-US' && noteText) {
+        noteText = noteText
+          .replace(/He lives in/gi, currentLang === 'hi-IN' ? 'वह रहते हैं' : 'ते राहतात')
+          .replace(/She lives in/gi, currentLang === 'hi-IN' ? 'वह रहती हैं' : 'त्या राहतात')
+          .replace(/and visits on/gi, currentLang === 'hi-IN' ? 'और आते हैं' : 'आणि येतात')
+          .replace(/Tuesdays/gi, currentLang === 'hi-IN' ? 'मंगलवार को' : 'मंगळवारी')
+          .replace(/Mondays/gi, currentLang === 'hi-IN' ? 'सोमवार को' : 'सोमवारी');
+      }
+
       const textToSpeak = t('recognizedAudio', {
         relationship: relLocalized,
         name: person.name,
-        contextNote: person.contextNote || '',
+        contextNote: noteText,
       });
 
       const utterance = new SpeechSynthesisUtterance(textToSpeak);
       utterance.lang = currentLang;
       utterance.volume = 1.0;
-      utterance.rate = 0.88;
-      utterance.pitch = 1.0;
+      utterance.rate = 0.85;
 
       const matchedVoice = getVoiceForLanguage(currentLang);
       if (matchedVoice) utterance.voice = matchedVoice;
@@ -428,13 +444,14 @@ export default function PatientMirror() {
     }, 80);
   };
 
-  // Multilingual SpeechSynthesis for UNRECOGNIZED Visitor
+  // Multilingual SpeechSynthesis for UNRECOGNIZED Visitor (Spoken max 2 times per encounter)
   const speakUnknownAnnouncement = () => {
     if (!('speechSynthesis' in window)) return;
 
-    const now = Date.now();
-    if (now - lastUnknownSpokenTimeRef.current < 5000) return;
-    lastUnknownSpokenTimeRef.current = now;
+    if (spokenCountRef.current >= 2) return; // Stop speaking after 2 times!
+
+    spokenCountRef.current += 1;
+    lastUnknownSpokenTimeRef.current = Date.now();
 
     window.speechSynthesis.cancel();
 
@@ -443,7 +460,7 @@ export default function PatientMirror() {
       const utterance = new SpeechSynthesisUtterance(textToSpeak);
       utterance.lang = currentLang;
       utterance.volume = 1.0;
-      utterance.rate = 0.88;
+      utterance.rate = 0.85;
 
       const matchedVoice = getVoiceForLanguage(currentLang);
       if (matchedVoice) utterance.voice = matchedVoice;
