@@ -241,6 +241,7 @@ export default function CaregiverDashboard() {
 
       const payload = {
         userId,
+        familyCode: accessCode,
         id: selectedSnapshot._id,
         name: formData.name,
         relationship: formData.relationship,
@@ -297,6 +298,7 @@ export default function CaregiverDashboard() {
 
       const payload = {
         userId,
+        familyCode: accessCode,
         visitorId: targetVisitorId,
         unknownSnapshotId: selectedSnapshot._id,
         newDescriptor: finalDescriptor || Array.from({ length: 128 }, () => (Math.random() - 0.5) * 0.1),

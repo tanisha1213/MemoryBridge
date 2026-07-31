@@ -389,6 +389,7 @@ const handleRegisterPost = async (req, res) => {
     if (existingIndex !== -1) {
       const item = global._memoryBridgeVisitors[existingIndex];
       if (userId) item.userId = userId;
+      if (familyCode) item.familyCode = familyCode;
       item.name = name;
       item.relationship = relationship;
       item.contextNote = contextNote || '';
@@ -406,7 +407,7 @@ const handleRegisterPost = async (req, res) => {
       const newVisitor = {
         _id: 'mem_' + Date.now(),
         userId,
-        familyCode: familyCode || 'MB-1001',
+        familyCode,
         name,
         relationship,
         contextNote: contextNote || '',
