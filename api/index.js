@@ -510,6 +510,11 @@ app.all('*', async (req, res) => {
     }
   }
 
+  if (urlPath.includes('/tts/stream')) {
+    const { handleTtsStream } = require('../server/routes/ttsRoutes');
+    return handleTtsStream(req, res);
+  }
+
   if (urlPath.includes('/health')) {
     return res.json({
       status: 'ok',

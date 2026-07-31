@@ -498,11 +498,10 @@ export default function PatientMirror() {
     return match || null;
   };
 
-  // 2. Strict Single-Speech Execution
+  // 2. Strict Single-Speech Execution (Fallback)
   const speakFluentText = (text, langCode = 'hi-IN') => {
     if (!('speechSynthesis' in window) || !text) return;
 
-    // HARD CANCEL: Stop all existing and queued audio immediately to prevent double voices!
     window.speechSynthesis.cancel();
 
     setTimeout(() => {
@@ -514,7 +513,7 @@ export default function PatientMirror() {
       }
 
       utterance.lang = langCode;
-      utterance.rate = 0.85; // Natural human pace
+      utterance.rate = 0.85;
       utterance.pitch = 1.0;
 
       utterance.onend = () => {
@@ -529,39 +528,61 @@ export default function PatientMirror() {
     }, 50);
   };
 
-  // 3. Grammatically Correct Multi-Lingual Messages
+  // 3. High-Fidelity Neural Audio Player (Streams from /api/tts/stream)
+  const playCleanVoice = (text, langCode, visitorId) => {
+    if (!text) return;
+
+    // 🔒 STRICT CHECK: Prevent re-triggering the same sentence
+    if (spokenUserRef.current === visitorId) return;
+    spokenUserRef.current = visitorId;
+
+    if (window.currentAudio) {
+      try {
+        window.currentAudio.pause();
+      } catch (e) {}
+      window.currentAudio = null;
+    }
+
+    const lang = langCode.startsWith('mr') ? 'mr' : langCode.startsWith('hi') ? 'hi' : 'en';
+    const audioUrl = `/api/tts/stream?text=${encodeURIComponent(text)}&lang=${lang}`;
+
+    const audio = new Audio(audioUrl);
+    window.currentAudio = audio;
+    audio.play().catch((err) => {
+      console.warn('Backend audio stream playback fallback to Web Speech API:', err.message);
+      speakFluentText(text, langCode);
+    });
+  };
+
+  // 4. Grammatically Correct Multi-Lingual Messages
   const speakRecognition = (visitor, selectedLang = currentLang) => {
     if (!visitor) return;
 
-    // Prevent duplicate playback for the same person
-    if (spokenUserRef.current === visitor._id) return;
-    spokenUserRef.current = visitor._id;
-
     const relationship = getLocalizedRelationship(visitor.relationship, selectedLang) || 'परिचित';
 
+    let text = '';
     if (selectedLang === 'hi-IN') {
-      // Grammatically correct, natural Hindi
-      speakFluentText(`नमस्ते। यह आपके ${relationship}, ${visitor.name} हैं।`, 'hi-IN');
+      text = `यह आपके ${relationship}, ${visitor.name} हैं।`;
     } else if (selectedLang === 'mr-IN') {
-      // Grammatically correct, natural Marathi
-      speakFluentText(`नमस्कार. हे तुमचे ${relationship}, ${visitor.name} आहेत।`, 'mr-IN');
+      text = `हे तुमचे ${relationship}, ${visitor.name} आहेत।`;
     } else {
-      // English
-      speakFluentText(`Hello. This is your ${relationship}, ${visitor.name}.`, 'en-IN');
+      text = `This is your ${relationship}, ${visitor.name}.`;
     }
+
+    playCleanVoice(text, selectedLang, visitor._id);
   };
 
   const speakUnknownAlert = (selectedLang = currentLang) => {
-    if (spokenUserRef.current === 'UNKNOWN_ALERT') return;
-    spokenUserRef.current = 'UNKNOWN_ALERT';
-
+    let text = '';
     if (selectedLang === 'hi-IN') {
-      speakFluentText('एक नए व्यक्ति आए हैं। देखभाल करने वाले को सूचना भेज दी गई है।', 'hi-IN');
+      text = 'एक नए व्यक्ति आए हैं। सूचना भेज दी गई है।';
     } else if (selectedLang === 'mr-IN') {
-      speakFluentText('एक नवीन व्यक्ती आली आहे. काळजीवाहू व्यक्तीस माहिती पाठवली आहे।', 'mr-IN');
+      text = 'एक नवीन व्यक्ती आली आहे. माहिती पाठवली आहे।';
     } else {
-      speakFluentText('A visitor has arrived. A notification has been sent to your caregiver.', 'en-IN');
+      text = 'A new visitor has arrived. A notification has been sent.';
     }
+
+    playCleanVoice(text, selectedLang, 'UNKNOWN_ALERT');
   };
 
   const handleLanguageChange = (newLang) => {

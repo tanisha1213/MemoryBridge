@@ -134,6 +134,10 @@ app.use('/visitors', visitorRoutes);
 app.use('/api/reminders', reminderRoutes);
 app.use('/reminders', reminderRoutes);
 
+const { router: ttsRoutes } = require('./routes/ttsRoutes');
+app.use('/api/tts', ttsRoutes);
+app.use('/tts', ttsRoutes);
+
 // Activity Logs Endpoint
 app.get('/api/logs', async (req, res) => {
   try {
