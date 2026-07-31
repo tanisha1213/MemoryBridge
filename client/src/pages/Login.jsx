@@ -7,31 +7,31 @@ export default function Login() {
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState('code'); // 'code' | 'login' | 'register'
   const [loading, setLoading] = useState(false);
+  const [errorMessage, setErrorMessage] = useState(null);
+  const [createdCode, setCreatedCode] = useState(null);
 
   // Forms
   const [accessCode, setAccessCode] = useState('MB-1001');
-  const [email, setEmail] = useState('demo@memorybridge.com');
-  const [password, setPassword] = useState('password123');
-  const [patientName, setPatientName] = useState('Tanisha');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [patientName, setPatientName] = useState('');
   const [nativeLanguage, setNativeLanguage] = useState('en-US');
 
   const handleSaveUser = (userData) => {
-    localStorage.setItem('mb_userId', userData._id || 'usr_demo_100');
-    localStorage.setItem('mb_userEmail', userData.email || email || 'demo@memorybridge.com');
-    localStorage.setItem('mb_accessCode', userData.accessCode || accessCode || 'MB-1001');
-    localStorage.setItem('mb_patientName', userData.patientName || patientName || 'Tanisha');
-    const existingLang = localStorage.getItem('mb_nativeLanguage');
+    localStorage.setItem('mb_userId', userData._id || 'usr_' + Date.now());
+    localStorage.setItem('mb_userEmail', userData.email || email);
+    localStorage.setItem('mb_accessCode', userData.accessCode || accessCode);
+    localStorage.setItem('mb_patientName', userData.patientName || patientName || 'Elder Patient');
     if (userData.nativeLanguage) {
       localStorage.setItem('mb_nativeLanguage', userData.nativeLanguage);
-    } else if (!existingLang) {
-      localStorage.setItem('mb_nativeLanguage', 'hi-IN');
     }
   };
 
-  // 1. Family Code Sign-In (Resilient fallback)
+  // 1. Patient Member ID / Access Code Sign-In
   const handleCodeSubmit = async (e) => {
     e.preventDefault();
     setLoading(true);
+    setErrorMessage(null);
     try {
       const res = await fetch('/api/auth/access-code', {
         method: 'POST',
@@ -41,22 +41,23 @@ export default function Login() {
       if (res.ok) {
         const data = await res.json();
         handleSaveUser(data);
+        navigate('/patient');
       } else {
-        handleSaveUser({ _id: 'usr_code_' + accessCode, accessCode, patientName });
+        const err = await res.json().catch(() => ({}));
+        setErrorMessage(err.error || 'Invalid Family Access Code');
       }
     } catch (err) {
-      // Local fallback on connection timeout
-      handleSaveUser({ _id: 'usr_code_' + accessCode, accessCode, patientName });
+      setErrorMessage('Connection error. Please try again.');
     } finally {
       setLoading(false);
-      navigate('/patient');
     }
   };
 
-  // 2. Caregiver Login (Resilient fallback)
+  // 2. Caregiver Email/Password Login
   const handleLoginSubmit = async (e) => {
     e.preventDefault();
     setLoading(true);
+    setErrorMessage(null);
     try {
       const res = await fetch('/api/auth/login', {
         method: 'POST',
@@ -66,21 +67,23 @@ export default function Login() {
       if (res.ok) {
         const data = await res.json();
         handleSaveUser(data);
+        navigate('/caregiver');
       } else {
-        handleSaveUser({ _id: 'usr_email_' + email.replace(/[^a-zA-Z0-9]/g, ''), email, patientName });
+        const err = await res.json().catch(() => ({}));
+        setErrorMessage(err.error || 'Invalid email or password');
       }
     } catch (err) {
-      handleSaveUser({ _id: 'usr_email_' + email.replace(/[^a-zA-Z0-9]/g, ''), email, patientName });
+      setErrorMessage('Connection error. Please try again.');
     } finally {
       setLoading(false);
-      navigate('/caregiver');
     }
   };
 
-  // 3. New Family Register (Resilient fallback)
+  // 3. New Family Account Registration (Creates brand new clean family room)
   const handleRegisterSubmit = async (e) => {
     e.preventDefault();
     setLoading(true);
+    setErrorMessage(null);
     try {
       const res = await fetch('/api/auth/register', {
         method: 'POST',
@@ -90,14 +93,15 @@ export default function Login() {
       if (res.ok) {
         const data = await res.json();
         handleSaveUser(data);
+        setCreatedCode(data.accessCode);
       } else {
-        handleSaveUser({ _id: 'usr_' + Date.now(), email, patientName, nativeLanguage, accessCode: 'MB-' + Math.floor(1000 + Math.random() * 9000) });
+        const err = await res.json().catch(() => ({}));
+        setErrorMessage(err.error || 'Registration failed. Email may already be in use.');
       }
     } catch (err) {
-      handleSaveUser({ _id: 'usr_' + Date.now(), email, patientName, nativeLanguage, accessCode: 'MB-' + Math.floor(1000 + Math.random() * 9000) });
+      setErrorMessage('Connection error. Could not create account.');
     } finally {
       setLoading(false);
-      navigate('/caregiver');
     }
   };
 
@@ -152,33 +156,64 @@ export default function Login() {
           </div>
         </div>
 
-        {/* SIMPLE SIGN-IN MODE TABS */}
-        <div className="flex bg-slate-900 p-1.5 rounded-2xl border border-slate-800 text-xs font-bold">
-          <button
-            onClick={() => setActiveTab('code')}
-            className={`flex-1 py-2.5 rounded-xl transition-all ${
-              activeTab === 'code' ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-white'
-            }`}
-          >
-            🔑 Family Code
-          </button>
-          <button
-            onClick={() => setActiveTab('login')}
-            className={`flex-1 py-2.5 rounded-xl transition-all ${
-              activeTab === 'login' ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-white'
-            }`}
-          >
-            📧 Caregiver Login
-          </button>
-          <button
-            onClick={() => setActiveTab('register')}
-            className={`flex-1 py-2.5 rounded-xl transition-all ${
-              activeTab === 'register' ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-white'
-            }`}
-          >
-            ✨ New Family
-          </button>
-        </div>
+        {/* ERROR MESSAGE DISPLAY */}
+        {errorMessage && (
+          <div className="bg-rose-500/20 border border-rose-500/40 p-3 rounded-2xl text-rose-300 text-xs font-bold text-center">
+            {errorMessage}
+          </div>
+        )}
+
+        {/* ACCOUNT CREATED CONFIRMATION MODAL */}
+        {createdCode ? (
+          <div className="bg-emerald-500/20 border-2 border-emerald-400 p-5 rounded-2xl space-y-3 text-center">
+            <CheckCircle2 className="w-10 h-10 text-emerald-400 mx-auto" />
+            <h3 className="text-lg font-extrabold text-white">🎉 New Family Account Created!</h3>
+            <p className="text-xs text-slate-300">
+              Your new family account has been initialized with a <strong>100% Clean Slate (0 visitors, 0 reminders)</strong>.
+            </p>
+            <div className="bg-slate-950 p-3 rounded-xl border border-slate-800">
+              <span className="text-xs uppercase font-bold text-slate-400 block mb-1">Your Patient Member Code:</span>
+              <span className="text-2xl font-mono font-extrabold text-emerald-400 tracking-widest">{createdCode}</span>
+            </div>
+            <p className="text-[11px] text-slate-400">
+              Enter this Member Code into the Patient Mirror View device to pair camera detection!
+            </p>
+            <button
+              onClick={() => navigate('/caregiver')}
+              className="w-full py-3 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold rounded-xl text-sm transition-all shadow-lg"
+            >
+              Enter Caregiver Portal &rarr;
+            </button>
+          </div>
+        ) : (
+          <>
+            {/* SIMPLE SIGN-IN MODE TABS */}
+            <div className="flex bg-slate-900 p-1.5 rounded-2xl border border-slate-800 text-xs font-bold">
+              <button
+                onClick={() => { setActiveTab('code'); setErrorMessage(null); }}
+                className={`flex-1 py-2.5 rounded-xl transition-all ${
+                  activeTab === 'code' ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                🔑 Member Code
+              </button>
+              <button
+                onClick={() => { setActiveTab('login'); setErrorMessage(null); }}
+                className={`flex-1 py-2.5 rounded-xl transition-all ${
+                  activeTab === 'login' ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                📧 Caregiver Login
+              </button>
+              <button
+                onClick={() => { setActiveTab('register'); setErrorMessage(null); }}
+                className={`flex-1 py-2.5 rounded-xl transition-all ${
+                  activeTab === 'register' ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                ✨ New Family
+              </button>
+            </div>
 
         {/* MODE 1: FAMILY CODE */}
         {activeTab === 'code' && (
@@ -316,6 +351,8 @@ export default function Login() {
               {loading ? 'Creating Account...' : 'Create Family Account'} <ArrowRight className="w-4 h-4" />
             </button>
           </form>
+        )}
+        </>
         )}
 
       </div>
