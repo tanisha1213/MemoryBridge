@@ -536,9 +536,21 @@ export default function CaregiverDashboard() {
                           <p className="text-sm font-bold text-white">Unrecognized Visitor</p>
                           <p className="text-xs text-slate-400">Captured by Camera</p>
                         </div>
-                        <button className="px-3 py-1.5 bg-emerald-500/20 text-emerald-300 text-xs font-bold rounded-xl border border-emerald-500/30 hover:bg-emerald-500/30">
-                          {t('tagPersonBtn')}
-                        </button>
+                        <div className="flex items-center gap-2">
+                          <button className="px-3 py-1.5 bg-emerald-500/20 text-emerald-300 text-xs font-bold rounded-xl border border-emerald-500/30 hover:bg-emerald-500/30">
+                            {t('tagPersonBtn')}
+                          </button>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleDeleteVisitor(visitor._id, 'Unrecognized Snapshot');
+                            }}
+                            className="p-2 rounded-xl bg-slate-800 hover:bg-rose-500/20 text-slate-400 hover:text-rose-400 transition-colors"
+                            title="Delete snapshot"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
                       </div>
                     </div>
                   ))}

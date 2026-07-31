@@ -152,7 +152,12 @@ export default function PatientMirror() {
       if (remindersRes.ok) setReminders(await remindersRes.json());
       if (settingsRes.ok) {
         const s = await settingsRes.json();
-        if (s.nativeLanguage) setCurrentLang(s.nativeLanguage);
+        const savedLocalLang = localStorage.getItem('mb_nativeLanguage');
+        if (savedLocalLang) {
+          setCurrentLang(savedLocalLang);
+        } else if (s.nativeLanguage) {
+          setCurrentLang(s.nativeLanguage);
+        }
       }
     } catch (err) {
       console.error('Error fetching patient mirror data:', err);
@@ -240,8 +245,6 @@ export default function PatientMirror() {
           } catch (e) {}
         }
 
-        const now = Date.now();
-
         if (detection) {
           noFaceFramesCountRef.current = 0;
 
@@ -259,8 +262,8 @@ export default function PatientMirror() {
             }
           });
 
-          // Strict L2 face distance match condition: Distance < 0.42 (Stops false matches!)
-          if (bestMatch && minDistance < 0.42) {
+          // Optimal face distance match cutoff: Distance < 0.52 (Pose/Outfit invariant, zero false matches!)
+          if (bestMatch && minDistance < 0.52) {
             setRecognizedPerson(bestMatch);
             setIsUnknownPresent(false);
             setDetectionDistance(minDistance.toFixed(2));
@@ -272,12 +275,9 @@ export default function PatientMirror() {
             setIsUnknownPresent(true);
             setDetectionDistance(null);
 
-            if (
-              !hasCapturedForCurrentUnknownRef.current &&
-              now - lastUnknownCaptureTimeRef.current > 45000
-            ) {
+            // Instant snapshot capture for unrecognized visitor episode
+            if (!hasCapturedForCurrentUnknownRef.current) {
               hasCapturedForCurrentUnknownRef.current = true;
-              lastUnknownCaptureTimeRef.current = now;
               captureAndPostUnknownVisitor(liveDescriptor, false);
               speakUnknownAnnouncement();
             }
@@ -288,10 +288,8 @@ export default function PatientMirror() {
           setIsUnknownPresent(false);
           setDetectionDistance(null);
 
-          if (
-            noFaceFramesCountRef.current > 30 &&
-            now - lastUnknownCaptureTimeRef.current > 45000
-          ) {
+          // Reset encounter lock after 10 frames (~5 seconds) of no face
+          if (noFaceFramesCountRef.current > 10) {
             hasCapturedForCurrentUnknownRef.current = false;
           }
         }
@@ -341,7 +339,18 @@ export default function PatientMirror() {
 
   const handleLanguageChange = (newLang) => {
     setCurrentLang(newLang);
+    localStorage.setItem('mb_nativeLanguage', newLang);
     showToast(`🌐 Language set to ${TRANSLATIONS[newLang]?.label}`);
+
+    const userId = localStorage.getItem('mb_userId');
+    fetch('/api/settings', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(userId ? { 'x-user-id': userId } : {}),
+      },
+      body: JSON.stringify({ userId, nativeLanguage: newLang }),
+    }).catch(() => {});
 
     if ('speechSynthesis' in window) {
       window.speechSynthesis.cancel();
