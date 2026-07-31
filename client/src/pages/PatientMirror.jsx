@@ -293,29 +293,36 @@ export default function PatientMirror() {
     return () => clearInterval(interval);
   }, [userId, accessCode]);
 
-  // Start webcam feed
+  // Start mobile-optimized webcam feed
   useEffect(() => {
     let stream = null;
 
     async function startCamera() {
       try {
         setCameraError(null);
-        stream = await navigator.mediaDevices.getUserMedia({
+
+        const constraints = {
           video: {
-            width: { ideal: 1280 },
-            height: { ideal: 720 },
-            facingMode: 'user',
+            facingMode: 'user', // Front camera on mobile
+            width: { ideal: 640, max: 1280 },
+            height: { ideal: 480, max: 720 },
+            frameRate: { max: 15 }, // Cap frame rate to save mobile battery & GPU
           },
           audio: false,
-        });
+        };
+
+        stream = await navigator.mediaDevices.getUserMedia(constraints);
 
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
+          try {
+            await videoRef.current.play();
+          } catch (e) {}
           setCameraActive(true);
         }
       } catch (err) {
-        console.error('Camera access denied:', err);
-        setCameraError('Camera access unavailable. Please enable webcam permissions.');
+        console.error('Mobile Camera Error:', err);
+        setCameraError('Camera access denied or not supported on this browser. Please allow camera permissions in settings.');
         setCameraActive(false);
       }
     }
@@ -913,6 +920,7 @@ export default function PatientMirror() {
               ref={videoRef}
               autoPlay
               playsInline
+              webkit-playsinline="true"
               muted
               className="w-full h-full object-cover transform -scale-x-100"
             />
