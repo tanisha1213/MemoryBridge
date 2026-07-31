@@ -185,16 +185,18 @@ async function getVisitors(registeredQuery, userId, familyCode) {
   try {
     if (isDbConnected()) {
       try {
-        let filter = {
-          $or: [
-            ...(userId ? [{ userId }] : []),
-            ...(familyCode ? [{ familyCode }] : []),
-          ],
-        };
+      let filter = {};
+      if (registeredQuery === 'false') {
+        filter.isRegistered = { $ne: true };
+      } else {
+        const conditions = [];
+        if (userId) conditions.push({ userId });
+        if (familyCode) conditions.push({ familyCode });
+        if (conditions.length > 0) filter.$or = conditions;
         if (registeredQuery === 'true') filter.isRegistered = true;
-        if (registeredQuery === 'false') filter.isRegistered = { $ne: true };
+      }
 
-        const list = await Visitor.find(filter).sort({ updatedAt: -1, createdAt: -1 }).lean();
+      const list = await Visitor.find(filter).sort({ updatedAt: -1, createdAt: -1 }).lean();
         return list || [];
       } catch (e) {
         console.warn("MongoDB Visitors query error:", e.message);

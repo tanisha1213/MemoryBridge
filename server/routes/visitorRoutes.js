@@ -207,21 +207,12 @@ router.get(['/unknowns', '/:familyCode/unknowns'], async (req, res) => {
 
     if (isDbConnected()) {
       try {
-        let filter = {
-          $or: [
-            ...(userId ? [{ userId }] : []),
-            ...(familyCode ? [{ familyCode }] : []),
-          ],
-          isRegistered: { $ne: true }
-        };
-        const unknowns = await Visitor.find(filter).sort({ createdAt: -1, updatedAt: -1 }).lean();
-        return res.json(unknowns);
+        const unknowns = await Visitor.find({ isRegistered: { $ne: true } }).sort({ createdAt: -1, updatedAt: -1 }).lean();
+        return res.json(unknowns || []);
       } catch (e) {}
     }
 
-    const filtered = global._memoryBridgeVisitors.filter((v) =>
-      ((familyCode && v.familyCode === familyCode) || (userId && String(v.userId) === String(userId))) && !v.isRegistered
-    );
+    const filtered = (global._memoryBridgeVisitors || []).filter((v) => !v.isRegistered);
     return res.json(filtered);
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch unknown visitor queue' });
