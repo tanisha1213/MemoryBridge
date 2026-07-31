@@ -59,6 +59,7 @@ export default function PatientMirror() {
   const activeRecognizedUserRef = useRef(null); // Currently recognized person ID
   const unknownFrameCounterRef = useRef(0); // How many consecutive unknown frames
   const isSnapshotLockedRef = useRef(false); // Prevents taking duplicate photos
+  const snapshotCooldownTimerRef = useRef(null);
   const spokenCountRef = useRef(0);
   const noFaceFramesCountRef = useRef(0);
   const isProcessingFrameRef = useRef(false);
@@ -398,9 +399,14 @@ export default function PatientMirror() {
 
         // Trigger unknown snapshot only after 3 consecutive unknown frames (~3 seconds)
         if (unknownFrameCounterRef.current >= 3 && !isSnapshotLockedRef.current) {
-          isSnapshotLockedRef.current = true; // Lock taking further photos!
-          captureAndPostUnknownVisitor(Array.from(liveDescriptor), liveOutfitVector, false);
+          isSnapshotLockedRef.current = true; // Synchronous Lockout BEFORE Vercel API network call fires!
           speakUnknownAnnouncement();
+          captureAndPostUnknownVisitor(Array.from(liveDescriptor), liveOutfitVector, false);
+
+          if (snapshotCooldownTimerRef.current) clearTimeout(snapshotCooldownTimerRef.current);
+          snapshotCooldownTimerRef.current = setTimeout(() => {
+            isSnapshotLockedRef.current = false;
+          }, 15000);
         }
       } catch (err) {
         // Silent catch
@@ -409,12 +415,28 @@ export default function PatientMirror() {
       }
     };
 
+    let timerId = null;
+    let isCancelled = false;
+
+    const runLoop = async () => {
+      if (isCancelled) return;
+
+      if (cameraActive && isModelLoaded && !isProcessingFrameRef.current) {
+        await detectFaces();
+      }
+
+      if (!isCancelled) {
+        timerId = setTimeout(runLoop, 600);
+      }
+    };
+
     if (cameraActive && isModelLoaded) {
-      intervalId = setInterval(detectFaces, 500);
+      runLoop();
     }
 
     return () => {
-      if (intervalId) clearInterval(intervalId);
+      isCancelled = true;
+      if (timerId) clearTimeout(timerId);
     };
   }, [cameraActive, isModelLoaded, registeredVisitors, currentLang]);
 
