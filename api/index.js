@@ -472,10 +472,36 @@ app.all('*', async (req, res) => {
   }
 
   if (urlPath.includes('/reminders')) {
-    if (method === 'GET') return res.json(global._memoryBridgeReminders);
+    const userId = getUserId(req);
+    const familyCode = getFamilyCode(req);
+    if (method === 'GET') {
+      if (!userId && !familyCode) return res.json([]);
+      if (isDbConnected()) {
+        try {
+          const filter = { $or: [...(userId ? [{ userId }] : []), ...(familyCode ? [{ familyCode }] : [])] };
+          const items = await Reminder.find(filter).sort({ createdAt: 1 });
+          return res.json(items);
+        } catch (e) {}
+      }
+      const filtered = global._memoryBridgeReminders.filter((r) => {
+        if (userId && String(r.userId) === String(userId)) return true;
+        if (familyCode && String(r.familyCode) === String(familyCode)) return true;
+        return false;
+      });
+      return res.json(filtered);
+    }
     if (method === 'POST') {
       const { title, time } = req.body;
-      const reminder = { _id: 'rem_' + Date.now(), title, time, isCompleted: false, createdAt: new Date() };
+      const reminderData = { userId, familyCode, title, time, isCompleted: false };
+      if (isDbConnected()) {
+        try {
+          const newRem = new Reminder(reminderData);
+          await newRem.save();
+          global._memoryBridgeReminders.push(newRem.toObject());
+          return res.status(201).json(newRem);
+        } catch (e) {}
+      }
+      const reminder = { _id: 'rem_' + Date.now(), ...reminderData, createdAt: new Date() };
       global._memoryBridgeReminders.push(reminder);
       return res.status(201).json(reminder);
     }

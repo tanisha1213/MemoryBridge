@@ -192,7 +192,11 @@ export default function PatientMirror() {
 
   const getAuthHeaders = () => {
     const userId = localStorage.getItem('mb_userId');
-    return userId ? { 'x-user-id': userId } : {};
+    const accessCode = localStorage.getItem('mb_accessCode');
+    return {
+      ...(userId ? { 'x-user-id': userId } : {}),
+      ...(accessCode ? { 'x-family-code': accessCode } : {}),
+    };
   };
 
   const fetchData = async () => {
