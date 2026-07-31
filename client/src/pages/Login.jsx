@@ -93,15 +93,10 @@ export default function Login() {
       if (res.ok) {
         const data = await res.json();
         handleSaveUser(data);
-        if (res.status === 201) {
-          setCreatedCode(data.accessCode);
-        } else {
-          // Status 200: Account already existed and password matched -> Navigate directly to Caregiver Portal
-          navigate('/caregiver');
-        }
+        navigate('/caregiver');
       } else {
         const err = await res.json().catch(() => ({}));
-        setErrorMessage(err.error || 'Registration failed. Email may already be registered with a different password.');
+        setErrorMessage(err.error || 'Registration failed. Please check details and try again.');
       }
     } catch (err) {
       setErrorMessage('Connection error. Could not connect to authentication server.');
