@@ -37,43 +37,53 @@ router.post('/register', async (req, res) => {
       return res.status(400).json({ error: 'Email and password are required' });
     }
 
-    const accessCode = generateAccessCode();
-    const userData = {
-      email: email.toLowerCase().trim(),
-      password,
-      patientName: patientName || 'Elder Patient',
-      accessCode,
-      nativeLanguage: nativeLanguage || 'en-US',
-    };
+    const cleanEmail = email.toLowerCase().trim();
 
     if (isDbConnected()) {
       try {
-        const existing = await User.findOne({ email: userData.email });
+        const existing = await User.findOne({ email: cleanEmail });
         if (existing) {
-          return res.status(400).json({ error: 'An account with this email already exists' });
+          if (existing.password === password) {
+            return res.status(200).json(existing);
+          } else {
+            return res.status(400).json({ error: 'This email is already registered. Incorrect password entered.' });
+          }
         }
-        const newUser = new User(userData);
+        const accessCode = generateAccessCode();
+        const newUser = new User({
+          email: cleanEmail,
+          password,
+          patientName: patientName || 'Elder Patient',
+          accessCode,
+          nativeLanguage: nativeLanguage || 'en-US',
+        });
         await newUser.save();
         global._memoryBridgeUsers.unshift(newUser.toObject());
         return res.status(201).json(newUser);
       } catch (dbErr) {
         console.warn('MongoDB register user error:', dbErr.message);
-        if (dbErr.code === 11000) {
-          return res.status(400).json({ error: 'An account with this email already exists' });
-        }
         return res.status(400).json({ error: dbErr.message || 'Failed to register account' });
       }
     }
 
     // Memory Fallback
-    const existingMem = global._memoryBridgeUsers.find((u) => u.email === userData.email);
+    const existingMem = global._memoryBridgeUsers.find((u) => u.email === cleanEmail);
     if (existingMem) {
-      return res.status(400).json({ error: 'An account with this email already exists' });
+      if (existingMem.password === password) {
+        return res.status(200).json(existingMem);
+      } else {
+        return res.status(400).json({ error: 'This email is already registered. Incorrect password entered.' });
+      }
     }
 
+    const accessCode = generateAccessCode();
     const newUser = {
       _id: 'usr_' + Date.now(),
-      ...userData,
+      email: cleanEmail,
+      password,
+      patientName: patientName || 'Elder Patient',
+      accessCode,
+      nativeLanguage: nativeLanguage || 'en-US',
       createdAt: new Date(),
     };
     global._memoryBridgeUsers.unshift(newUser);

@@ -129,30 +129,30 @@ const handleAuthRegister = async (req, res) => {
   const { email, password, patientName, nativeLanguage } = req.body;
   if (!email || !password) return res.status(400).json({ error: 'Email & password required' });
   const cleanEmail = email.toLowerCase().trim();
-  const accessCode = 'MB-' + Math.floor(1000 + Math.random() * 9000);
 
   if (isDbConnected()) {
     try {
       const existing = await User.findOne({ email: cleanEmail });
       if (existing) {
-        return res.status(400).json({ error: 'An account with this email already exists' });
+        if (existing.password === password) return res.json(existing);
+        return res.status(400).json({ error: 'This email is already registered. Incorrect password entered.' });
       }
+      const accessCode = 'MB-' + Math.floor(1000 + Math.random() * 9000);
       const newUser = new User({ email: cleanEmail, password, patientName: patientName || 'Elder Patient', accessCode, nativeLanguage: nativeLanguage || 'en-US' });
       await newUser.save();
       return res.status(201).json(newUser);
     } catch (e) {
-      if (e.code === 11000) {
-        return res.status(400).json({ error: 'An account with this email already exists' });
-      }
       return res.status(400).json({ error: e.message || 'Failed to register account' });
     }
   }
 
   const existingMem = global._memoryBridgeUsers.find((u) => u.email === cleanEmail);
   if (existingMem) {
-    return res.status(400).json({ error: 'An account with this email already exists' });
+    if (existingMem.password === password) return res.json(existingMem);
+    return res.status(400).json({ error: 'This email is already registered. Incorrect password entered.' });
   }
 
+  const accessCode = 'MB-' + Math.floor(1000 + Math.random() * 9000);
   const newUser = { _id: 'usr_' + Date.now(), email: cleanEmail, password, patientName: patientName || 'Elder Patient', accessCode, nativeLanguage: nativeLanguage || 'en-US' };
   global._memoryBridgeUsers.unshift(newUser);
   return res.status(201).json(newUser);
