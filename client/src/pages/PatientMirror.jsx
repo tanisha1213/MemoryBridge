@@ -362,11 +362,12 @@ export default function PatientMirror() {
         });
 
         // =========================================================
-        // 🟢 FIX 2.1: RECOGNIZED USER LOCK (Euclidean Distance < 0.52)
+        // 🟢 CASE A: MATCH FOUND (Euclidean Distance < 0.54)
         // =========================================================
-        if (bestMatch && minDistance < 0.52) {
-          // Reset unknown counter and unlock snapshots for when this person leaves
+        if (bestMatch && minDistance < 0.54) {
+          // Reset unknown counter & snapshot lock
           unknownFrameCounterRef.current = 0;
+          isSnapshotLockedRef.current = false;
 
           if (activeRecognizedUserRef.current !== bestMatch._id) {
             activeRecognizedUserRef.current = bestMatch._id;
@@ -379,7 +380,7 @@ export default function PatientMirror() {
             setIsUnknownPresent(false);
             setDetectionDistance(minDistance.toFixed(2));
           }
-          // STRICTLY DISABLE and BLOCK taking any photo snapshot while this person is in frame
+          // Exit loop, DO NOT proceed to snapshot checks
           return;
         }
 
