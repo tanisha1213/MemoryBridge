@@ -443,10 +443,12 @@ export default function PatientMirror() {
           tempCtx.drawImage(video, 0, 0, tempCanvas.width, tempCanvas.height);
           const imageBase64 = tempCanvas.toDataURL('image/jpeg', 0.6);
 
+          const shouldSaveSnapshot = unknownFrameCounterRef.current >= 3 && !isSnapshotLockedRef.current;
+
           const pyRes = await fetch('http://localhost:5001/api/visitors/recognize', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ familyCode: accessCode, image: imageBase64 }),
+            body: JSON.stringify({ familyCode: accessCode, image: imageBase64, saveSnapshot: shouldSaveSnapshot }),
           });
 
           if (pyRes.ok) {
@@ -471,6 +473,16 @@ export default function PatientMirror() {
                 setDetectionDistance(pyData.distance.toFixed(2));
               }
               return;
+            } else if (pyData.status === 'UNKNOWN') {
+              if (shouldSaveSnapshot) {
+                isSnapshotLockedRef.current = true;
+                speakUnknownAlert(currentLang);
+                if (snapshotCooldownTimerRef.current) clearTimeout(snapshotCooldownTimerRef.current);
+                snapshotCooldownTimerRef.current = setTimeout(() => {
+                  isSnapshotLockedRef.current = false;
+                  unknownFrameCounterRef.current = 0;
+                }, 20000);
+              }
             }
           }
         } catch (pyErr) {}

@@ -139,6 +139,35 @@ router.get('/', async (req, res) => {
   }
 });
 
+// Express Route: Fetch Unknown Visitors for Caregiver Review
+router.get(['/unknowns', '/:familyCode/unknowns'], async (req, res) => {
+  try {
+    const familyCode = req.params.familyCode || getFamilyCode(req);
+    const userId = getUserId(req);
+
+    if (isDbConnected()) {
+      try {
+        let filter = {
+          $or: [
+            ...(userId ? [{ userId }] : []),
+            ...(familyCode ? [{ familyCode }] : []),
+          ],
+          isRegistered: { $ne: true }
+        };
+        const unknowns = await Visitor.find(filter).sort({ createdAt: -1, updatedAt: -1 }).lean();
+        return res.json(unknowns);
+      } catch (e) {}
+    }
+
+    const filtered = global._memoryBridgeVisitors.filter((v) =>
+      ((familyCode && v.familyCode === familyCode) || (userId && String(v.userId) === String(userId))) && !v.isRegistered
+    );
+    return res.json(filtered);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch unknown visitor queue' });
+  }
+});
+
 // GET /api/visitors/unknown
 router.get('/unknown', async (req, res) => {
   try {

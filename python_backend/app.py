@@ -164,7 +164,7 @@ def recognize_visitor():
                     min_distance = dist
                     best_match = visitor
 
-        # Strict Facenet512 Cosine Distance Threshold: 0.35 (Lower = stricter precision)
+        # 🟢 CASE A: RECOGNIZED VISITOR (Distance < 0.35)
         if best_match and min_distance < 0.35:
             return jsonify({
                 'status': 'RECOGNIZED',
@@ -176,10 +176,41 @@ def recognize_visitor():
                     'contextNote': best_match.get('contextNote', '')
                 }
             })
+
+        # 🔴 CASE B: UNKNOWN VISITOR -> SAVE DIRECTLY TO MONGODB IF saveSnapshot IS TRUE
         else:
+            save_snapshot = data.get('saveSnapshot', False)
+            snapshot_id = None
+
+            if save_snapshot and unknown_queue_col is not None:
+                from datetime import datetime
+                unknown_doc = {
+                    'familyCode': family_code,
+                    'name': 'Unrecognized Person',
+                    'relationship': 'Unknown',
+                    'contextNote': 'Captured by DeepFace camera',
+                    'photoThumbnail': image_b64,
+                    'embedding': live_embedding,
+                    'isRegistered': False,
+                    'status': 'PENDING_REVIEW',
+                    'lastSeen': datetime.utcnow(),
+                    'createdAt': datetime.utcnow()
+                }
+                
+                try:
+                    res_unknown = unknown_queue_col.insert_one(unknown_doc)
+                    snapshot_id = str(res_unknown.inserted_id)
+                    if visitors_col is not None:
+                        visitors_col.insert_one(unknown_doc)
+                    print(f"📸 Saved unknown snapshot to MongoDB! Doc ID: {snapshot_id}")
+                except Exception as db_err:
+                    print(f"⚠️ MongoDB Insert Error: {db_err}")
+
             return jsonify({
                 'status': 'UNKNOWN',
-                'distance': float(min_distance)
+                'distance': float(min_distance),
+                'snapshotSaved': save_snapshot,
+                'snapshotId': snapshot_id
             })
 
     except Exception as e:
