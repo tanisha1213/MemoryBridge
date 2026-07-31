@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { io } from 'socket.io-client';
+import * as faceapi from '@vladmandic/face-api';
 import {
   Users,
   UserPlus,
@@ -207,6 +208,25 @@ export default function CaregiverDashboard() {
     }
 
     try {
+      let finalDescriptor = selectedSnapshot.faceDescriptor;
+
+      if (!finalDescriptor || !Array.isArray(finalDescriptor) || finalDescriptor.length !== 128) {
+        try {
+          const img = document.createElement('img');
+          img.src = selectedSnapshot.photoThumbnail;
+          await new Promise((res) => { img.onload = res; img.onerror = res; });
+          const det = await faceapi
+            .detectSingleFace(img, new faceapi.TinyFaceDetectorOptions({ scoreThreshold: 0.1 }))
+            .withFaceLandmarks()
+            .withFaceDescriptor();
+          if (det && det.descriptor) {
+            finalDescriptor = Array.from(det.descriptor);
+          }
+        } catch (fErr) {
+          console.warn('Could not extract descriptor from image, creating fallback vector:', fErr);
+        }
+      }
+
       const payload = {
         userId,
         id: selectedSnapshot._id,
@@ -214,7 +234,7 @@ export default function CaregiverDashboard() {
         relationship: formData.relationship,
         contextNote: formData.contextNote,
         preferredLanguage: formData.preferredLanguage,
-        faceDescriptor: selectedSnapshot.faceDescriptor,
+        faceDescriptor: finalDescriptor || [],
         photoThumbnail: selectedSnapshot.photoThumbnail,
       };
 
