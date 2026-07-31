@@ -362,10 +362,10 @@ export default function PatientMirror() {
         });
 
         // =========================================================
-        // 🟢 CASE A: MATCH FOUND (Euclidean Distance < 0.54)
+        // 🟢 1. STRICT GATEKEEPER CHECK (Distance < 0.45)
         // =========================================================
-        if (bestMatch && minDistance < 0.54) {
-          // Reset unknown counter & snapshot lock
+        if (bestMatch && minDistance < 0.45) {
+          // ✅ CONFIRMED MATCH (Distance is strictly under 0.45)
           unknownFrameCounterRef.current = 0;
           isSnapshotLockedRef.current = false;
 
@@ -385,31 +385,20 @@ export default function PatientMirror() {
         }
 
         // =========================================================
-        // 🔴 FIX 2.2: TEMPORAL VERIFICATION FOR UNKNOWN FACES (Distance >= 0.52)
+        // 🔴 2. REJECT: DISTANCE TOO HIGH (>= 0.45) -> UNKNOWN VISITOR
         // =========================================================
-        
-        // If we ALREADY recognized this person previously in session, IGNORE head turns & movement flickers!
-        if (activeRecognizedUserRef.current !== null) {
-          unknownFrameCounterRef.current += 1;
-          // Require 4 consecutive unknown frames (~4 seconds) before releasing recognition lock
-          if (unknownFrameCounterRef.current < 4) {
-            return;
-          } else {
-            activeRecognizedUserRef.current = null;
-          }
-        }
+        // Clear any existing user lock immediately
+        activeRecognizedUserRef.current = null;
+        setRecognizedPerson(null);
+        setIsUnknownPresent(true);
+        setDetectionDistance(null);
 
         // Increment unknown frame verification counter
         unknownFrameCounterRef.current += 1;
 
-        // =========================================================
-        // 📸 FIX 2.3: SNAPSHOT LOCKOUT COOLDOWN (3 Consecutive Unknown Frames)
-        // =========================================================
+        // Trigger unknown snapshot only after 3 consecutive unknown frames (~3 seconds)
         if (unknownFrameCounterRef.current >= 3 && !isSnapshotLockedRef.current) {
-          isSnapshotLockedRef.current = true; // Lock taking further photos until camera frame is empty!
-          setRecognizedPerson(null);
-          setIsUnknownPresent(true);
-          setDetectionDistance(null);
+          isSnapshotLockedRef.current = true; // Lock taking further photos!
           captureAndPostUnknownVisitor(Array.from(liveDescriptor), liveOutfitVector, false);
           speakUnknownAnnouncement();
         }
